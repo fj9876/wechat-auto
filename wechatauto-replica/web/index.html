@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeChat-AIAgent 智能微信自动回复控制台</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="dark-theme">
+  <!-- 顶部导航与状态栏 -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo-badge">
+        <span class="logo-icon">🤖</span>
+        <div class="logo-text">
+          <h1>WeChat-AIAgent</h1>
+          <span class="version-tag">v2.0 通用智能版</span>
+        </div>
+      </div>
+      <div class="wechat-status-chip" id="wechatStatusChip">
+        <span class="status-dot dot-offline" id="wechatDot"></span>
+        <span id="wechatAccountText">正在检测微信客户端...</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="bot-control-group">
+        <span class="bot-status-label" id="botStatusLabel">自动回复已暂停</span>
+        <button id="toggleBotBtn" class="btn btn-primary pulse-btn">
+          <span class="btn-icon">▶</span>
+          <span id="toggleBotText">开启自动回复</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主布局容器 -->
+  <div class="app-container">
+    <!-- 侧边导航栏 -->
+    <aside class="app-sidebar">
+      <nav class="nav-menu">
+        <button class="nav-tab active" data-tab="tab-dashboard">
+          <span class="tab-icon">📊</span>
+          <span class="tab-label">运行看板</span>
+        </button>
+        <button class="nav-tab" data-tab="tab-targets">
+          <span class="tab-icon">🎯</span>
+          <span class="tab-label">回复对象选择</span>
+          <span class="badge" id="targetBadge">0</span>
+        </button>
+        <button class="nav-tab" data-tab="tab-llm">
+          <span class="tab-icon">🧠</span>
+          <span class="tab-label">大模型配置</span>
+        </button>
+        <button class="nav-tab" data-tab="tab-rag">
+          <span class="tab-icon">📚</span>
+          <span class="tab-label">本地知识库 (RAG)</span>
+          <span class="sub-chip" id="ragStatusChip">可选</span>
+        </button>
+        <button class="nav-tab" data-tab="tab-sandbox">
+          <span class="tab-icon">💬</span>
+          <span class="tab-label">在线沙盒测试</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="footer-info">
+          <span>微信 4.x / 3.x 自动化驱动</span>
+          <span class="footer-tip">已开启防刷节流保护</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主工作区 -->
+    <main class="app-content">
+      <!-- 1. 运行看板 -->
+      <section id="tab-dashboard" class="content-tab-pane active">
+        <div class="dashboard-grid">
+          <!-- 核心指标卡 -->
+          <div class="stat-card">
+            <div class="stat-icon bg-cyan">🤖</div>
+            <div class="stat-meta">
+              <span class="stat-title">当前大模型</span>
+              <span class="stat-value" id="dashModelName">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon bg-indigo">🎭</div>
+            <div class="stat-meta">
+              <span class="stat-title">助手角色预设</span>
+              <span class="stat-value" id="dashPresetName">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon bg-teal">🎯</div>
+            <div class="stat-meta">
+              <span class="stat-title">自动回复对象</span>
+              <span class="stat-value" id="dashTargetsCount">0 个对象</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon bg-emerald">📚</div>
+            <div class="stat-meta">
+              <span class="stat-title">本地 RAG 状态</span>
+              <span class="stat-value" id="dashRAGStatus">未启用 (可选)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 流水线全链路追踪看板 -->
+        <div class="card pipeline-card">
+          <div class="card-header">
+            <h2>⚡ 智能体全流程决策流 (微信 → 采集 → LLM → RAG → 工具 → 回复)</h2>
+            <span class="badge badge-outline">实时链路跟踪</span>
+          </div>
+          <div class="pipeline-visual-container">
+            <div class="pipeline-step-node" id="stepNode1">
+              <div class="step-num">1</div>
+              <div class="step-info">
+                <h4>微信消息采集</h4>
+                <p>白名单与@过滤</p>
+              </div>
+            </div>
+            <div class="pipeline-arrow">➔</div>
+            <div class="pipeline-step-node" id="stepNode2">
+              <div class="step-num">2</div>
+              <div class="step-info">
+                <h4>LLM 意图理解</h4>
+                <p>语义分析/危急筛查</p>
+              </div>
+            </div>
+            <div class="pipeline-arrow">➔</div>
+            <div class="pipeline-step-node" id="stepNode3">
+              <div class="step-num">3</div>
+              <div class="step-info">
+                <h4>本地知识库 RAG</h4>
+                <p>文档召回 (可选)</p>
+              </div>
+            </div>
+            <div class="pipeline-arrow">➔</div>
+            <div class="pipeline-step-node" id="stepNode4">
+              <div class="step-num">4</div>
+              <div class="step-info">
+                <h4>智能工具调用</h4>
+                <p>分诊/排班/安全/转人工</p>
+              </div>
+            </div>
+            <div class="pipeline-arrow">➔</div>
+            <div class="pipeline-step-node" id="stepNode5">
+              <div class="step-num">5</div>
+              <div class="step-info">
+                <h4>微信自动回复</h4>
+                <p>免责质检与发送</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 最近一条流水线日志明细 -->
+          <div class="last-pipeline-detail" id="lastPipelineDetail">
+            <div class="empty-hint">暂无消息触发，开启自动回复或在【在线沙盒测试】中直接发起测试</div>
+          </div>
+        </div>
+
+        <!-- 实时日志终端 -->
+        <div class="card terminal-card">
+          <div class="card-header">
+            <div class="header-title">
+              <h2>💻 实时运行日志流 (WebSocket)</h2>
+              <span class="live-indicator">LIVE</span>
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-sm btn-ghost" id="clearLogsBtn">清空控制台</button>
+            </div>
+          </div>
+          <div class="terminal-body" id="logTerminal">
+            <div class="log-row info">
+              <span class="log-time">[系统初始化]</span>
+              <span class="log-text">控制台加载完成，正在建立实时连接...</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. 回复对象选择 -->
+      <section id="tab-targets" class="content-tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🎯 自动回复对象配置 (联系人 / 微信群)</h2>
+              <p class="section-desc">在此勾选允许自动回复的微信好友或微信群。未勾选的会话将完全忽略，不产生打扰。</p>
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-outline" id="refreshContactsBtn">🔄 刷新会话列表</button>
+              <button class="btn btn-primary" id="saveTargetsBtn">💾 保存对象配置</button>
+            </div>
+          </div>
+
+          <!-- 群聊专属规则卡片 -->
+          <div class="group-rules-box">
+            <div class="rule-item">
+              <label class="toggle-switch">
+                <input type="checkbox" id="groupAtOnlyCheckbox" checked>
+                <span class="slider"></span>
+              </label>
+              <div class="rule-text">
+                <strong>微信群仅在被 @ 时才回复</strong>
+                <span>（强烈推荐开启！群成员只有明确 @机器人 或 @你 时，智能体才会回复，避免群内闲聊刷屏）</span>
+              </div>
+            </div>
+            <div class="rule-item">
+              <label class="toggle-switch">
+                <input type="checkbox" id="groupAutoAtSenderCheckbox" checked>
+                <span class="slider"></span>
+              </label>
+              <div class="rule-text">
+                <strong>群聊回复时自动 @ 提问者</strong>
+                <span>（生成回复时自动附带 @提问人，让群内沟通关系清晰准确）</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 工具栏：快捷全选与搜索 -->
+          <div class="targets-toolbar">
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="targetSearchInput" placeholder="输入昵称、微信号或群名称搜索...">
+            </div>
+            <div class="quick-btns">
+              <button class="btn btn-sm btn-ghost" id="selectOnlyFilehelperBtn">🛡️ 仅文件传输助手 (安全调试)</button>
+              <button class="btn btn-sm btn-ghost" id="selectAllContactsBtn">全选好友</button>
+              <button class="btn btn-sm btn-ghost" id="selectAllGroupsBtn">全选群聊</button>
+              <button class="btn btn-sm btn-ghost" id="clearAllTargetsBtn">清空选择</button>
+            </div>
+          </div>
+
+          <!-- 联系人与群聊分栏展示 -->
+          <div class="targets-split-grid">
+            <!-- 好友列表 -->
+            <div class="target-col">
+              <div class="col-header">
+                <h3>👤 微信好友 / 私聊 (<span id="contactCount">0</span>)</h3>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="replyAllPrivateCheckbox">
+                  <span>允许全部好友私聊</span>
+                </label>
+              </div>
+              <div class="target-list" id="contactsList">
+                <div class="loading-spinner">正在从微信获取好友列表...</div>
+              </div>
+            </div>
+
+            <!-- 微信群列表 -->
+            <div class="target-col">
+              <div class="col-header">
+                <h3>👥 微信群聊 (<span id="groupCount">0</span>)</h3>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="replyAllGroupsCheckbox">
+                  <span>允许全部微信群</span>
+                </label>
+              </div>
+              <div class="target-list" id="groupsList">
+                <div class="loading-spinner">正在从微信获取群聊列表...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. 大模型配置 -->
+      <section id="tab-llm" class="content-tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🧠 大模型接口与提示词配置</h2>
+              <p class="section-desc">配置 OpenAI 兼容的 API 接口，支持 DeepSeek、通义千问、Kimi、GPT-4o、Ollama 等各类模型。</p>
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-secondary" id="testLLMBtn">⚡ 测试连通性</button>
+              <button class="btn btn-primary" id="saveLLMBtn">💾 保存配置</button>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <!-- API Base URL -->
+            <div class="form-group col-8">
+              <label for="apiUrlInput">API Base URL (OpenAI兼容地址)</label>
+              <input type="text" id="apiUrlInput" placeholder="例如 https://api.deepseek.com/v1 或 http://localhost:11434/v1">
+              <span class="input-tip">兼容所有支持 OpenAI 规范的云端或本地大模型端点</span>
+            </div>
+
+            <!-- 模型名称 -->
+            <div class="form-group col-4">
+              <div class="label-with-action">
+                <label for="modelNameInput">模型名称 (Model)</label>
+                <button type="button" class="btn-text-action" id="fetchModelsBtn" title="根据上方API地址与Key自动获取上游模型清单">🔍 获取模型列表</button>
+              </div>
+              <div class="select-input-combo">
+                <input type="text" id="modelNameInput" placeholder="deepseek-chat">
+                <select id="modelPresetSelect">
+                  <option value="">-- 选择模型 --</option>
+                  <option value="deepseek-chat">DeepSeek-V3 (deepseek-chat)</option>
+                  <option value="deepseek-reasoner">DeepSeek-R1 深度推理</option>
+                  <option value="qwen-plus">通义千问 (qwen-plus)</option>
+                  <option value="moonshot-v1-8k">Kimi (moonshot-v1-8k)</option>
+                  <option value="gpt-4o">OpenAI (gpt-4o)</option>
+                  <option value="gpt-4o-mini">OpenAI (gpt-4o-mini)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- API Key -->
+            <div class="form-group col-12">
+              <label for="apiKeyInput">API Key (密钥)</label>
+              <div class="password-wrapper">
+                <input type="password" id="apiKeyInput" placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx">
+                <button type="button" class="btn-toggle-eye" id="toggleApiKeyEye">👁️</button>
+              </div>
+            </div>
+
+            <!-- 连通性测试结果反馈框 -->
+            <div class="form-group col-12" id="llmTestResultBox" style="display: none;">
+              <div class="test-result-banner" id="testResultBanner"></div>
+            </div>
+
+            <!-- 角色预设与系统提示词 -->
+            <div class="form-group col-12">
+              <div class="label-with-action">
+                <label for="presetSelect">助手角色预设</label>
+                <span class="sub-label">快速切换智能体业务性格与领域能力</span>
+              </div>
+              <select id="presetSelect" class="form-control select-preset">
+                <!-- 动态填充预设 -->
+              </select>
+            </div>
+
+            <div class="form-group col-12">
+              <label for="systemPromptInput">系统提示词 (System Prompt)</label>
+              <textarea id="systemPromptInput" rows="7" placeholder="在此自由编写智能体的角色指令、行为规范与回答风格..."></textarea>
+            </div>
+
+            <!-- 高级参数 -->
+            <div class="form-group col-4">
+              <label for="tempRange">生成温度 (Temperature): <span id="tempVal">0.7</span></label>
+              <input type="range" id="tempRange" min="0" max="1" step="0.05" value="0.7">
+            </div>
+
+            <div class="form-group col-4">
+              <label for="maxTokensInput">最大回复 Token</label>
+              <input type="number" id="maxTokensInput" value="1500">
+            </div>
+
+            <div class="form-group col-4">
+              <label for="cooldownInput">回复间隔节流 (秒)</label>
+              <input type="number" id="cooldownInput" step="0.5" value="1.0">
+            </div>
+
+            <!-- 回复前后缀与转人工 -->
+            <div class="form-group col-4">
+              <label for="prefixInput">回复前缀 (可选)</label>
+              <input type="text" id="prefixInput" placeholder="例如 [AI助手] ">
+            </div>
+            <div class="form-group col-4">
+              <label for="suffixInput">回复后缀 (可选)</label>
+              <input type="text" id="suffixInput" placeholder="例如 \n(本回复仅供参考)">
+            </div>
+            <div class="form-group col-4">
+              <label for="handoverInput">转人工关键词</label>
+              <input type="text" id="handoverInput" value="转人工">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. 本地 RAG 知识库 (可选) -->
+      <section id="tab-rag" class="content-tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>📚 本地 RAG 知识库 (可选功能)</h2>
+              <p class="section-desc">指定电脑中的本地文件夹，智能体将读取其中的文档并按需召回相关内容辅助回答。不启用时为纯大模型驱动。</p>
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-primary" id="saveRAGBtn">💾 保存 RAG 配置</button>
+            </div>
+          </div>
+
+          <!-- RAG 主开关 -->
+          <div class="rag-toggle-card">
+            <div class="toggle-meta">
+              <label class="toggle-switch lg">
+                <input type="checkbox" id="ragEnabledCheckbox">
+                <span class="slider"></span>
+              </label>
+              <div>
+                <h3>启用本地知识库 RAG</h3>
+                <span class="toggle-sub">开启后，智能体收到消息会先搜索指定目录内的本地知识，再结合大模型作答</span>
+              </div>
+            </div>
+            <div class="rag-state-badge" id="ragBadgeState">状态：已停用</div>
+          </div>
+
+          <!-- 知识库配置与扫描 -->
+          <div class="form-grid" id="ragConfigFields">
+            <div class="form-group col-8">
+              <div class="label-with-action">
+                <label for="kbFolderInput">本地知识库文件夹绝对路径</label>
+                <button type="button" class="btn-text-action" id="selectFolderBtn" title="打开系统原生弹窗选择目录">📂 弹窗选择文件夹</button>
+              </div>
+              <input type="text" id="kbFolderInput" placeholder="例如 D:\medical_docs 或 ./data/knowledge_base">
+              <span class="input-tip">支持文件格式：.txt, .md, .pdf, .docx, .csv, .json</span>
+            </div>
+            <div class="form-group col-4 form-btn-align">
+              <button class="btn btn-secondary" id="scanFolderBtn">🔍 扫描文档</button>
+              <button class="btn btn-primary" id="reindexBtn">⚡ 建立/重建索引</button>
+            </div>
+
+            <!-- 索引统计卡 -->
+            <div class="form-group col-12">
+              <div class="rag-stats-box">
+                <div class="stat-item">
+                  <span class="stat-sub">已索引文档</span>
+                  <strong id="ragDocCount">0 篇</strong>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-sub">切片总数</span>
+                  <strong id="ragChunkCount">0 块</strong>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-sub">检索方式</span>
+                  <strong class="text-cyan">纯 Python BM25 (免显卡跨电脑便携)</strong>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-sub">上次索引时间</span>
+                  <span id="ragLastTime">从未</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 文档列表 -->
+            <div class="form-group col-12">
+              <label>知识库已扫描文档清单</label>
+              <div class="doc-list-box" id="docListBox">
+                <div class="empty-hint">暂未扫描文档，请填入路径并点击【扫描文档】</div>
+              </div>
+            </div>
+
+            <!-- 知识检索测试沙盒 -->
+            <div class="form-group col-12">
+              <label>知识检索测试 (输入问题测试能否召回文档)</label>
+              <div class="search-test-box">
+                <input type="text" id="ragTestQueryInput" placeholder="例如：胸痛应该挂什么科？ 或 门诊排班时间表">
+                <button class="btn btn-outline" id="ragSearchTestBtn">测试检索</button>
+              </div>
+              <div class="search-result-box" id="ragSearchResultBox" style="display: none;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. 在线模拟沙盒 -->
+      <section id="tab-sandbox" class="content-tab-pane">
+        <div class="card sandbox-card">
+          <div class="card-header">
+            <div>
+              <h2>💬 在线模拟沙盒测试</h2>
+              <p class="section-desc">在不触发真实微信发送的情况下，全流程测试当前提示词、RAG 知识检索与工具调用效果。</p>
+            </div>
+            <div class="sandbox-controls">
+              <label class="checkbox-label">
+                <input type="checkbox" id="sandboxIsGroupCheckbox">
+                <span>模拟群聊模式 (自动检测@)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="sandbox-chat-area" id="sandboxChatArea">
+            <div class="chat-bubble bot">
+              <div class="bubble-sender">AI 智能助手</div>
+              <div class="bubble-content">
+                你好！我是你的智能助手。你可以输入任何问题测试我的回答、本地知识检索或医学分诊等工具调用能力。
+              </div>
+            </div>
+          </div>
+
+          <!-- 模拟输入框 -->
+          <div class="sandbox-input-bar">
+            <input type="text" id="sandboxMessageInput" placeholder="输入测试问题，按 Enter 发送 (例如: 我这两天持续胸口发闷伴随咳嗽，该怎么办？)...">
+            <button class="btn btn-primary" id="sandboxSendBtn">发送测试</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 全局 Toast 提示容器 -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

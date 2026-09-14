@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechatauto-replica"
+version = "1.2.2.2"
+description = "微信 4.x Windows 客户端自动化库（wxauto 复刻版）：SQLCipher 数据库解密读取 + UIA/坐标-OCR 混合发送，支持消息监听、媒体下载、朋友圈读取"
+readme = "README_pypi.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "wechatauto-replica" }]
+keywords = ["wechat", "weixin", "wechat4", "wxauto", "wechatauto", "uiautomation", "sqlcipher", "ocr", "rpa", "automation", "wechat-automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "uiautomation>=2.0.18",
+    "pywin32>=305",
+    "pyperclip>=1.8.2",
+    "Pillow>=9.0.0",
+    "psutil>=5.9.0",
+    "colorama>=0.4.6",
+    "cryptography>=41.0.0",
+    "winsdk>=1.0.0b10",
+    "imageio-ffmpeg>=0.4.9",
+    "zstandard>=0.19.0",
+    "pyautogui>=0.9.53",
+    "opencv-python>=4.8.0",
+]
+
+[project.optional-dependencies]
+moments = ["pyautogui>=0.9.53", "opencv-python>=4.8.0"]
+guia = ["winsdk>=1.0.0b10", "pypinyin>=0.48.0"]
+
+[project.urls]
+Homepage = "https://github.com/fanyuantaier/wechatauto-replica"
+Repository = "https://github.com/fanyuantaier/wechatauto-replica"
+Issues = "https://github.com/fanyuantaier/wechatauto-replica/issues"  # 上游 wxauto 项目主页（wechatauto 为其复刻版）
+
+[tool.setuptools.packages.find]
+include = ["wechatauto*"]
+
+[tool.setuptools.package-data]
+wechatauto = ["py.typed"]
+"wechatauto.assets" = ["*.png"]

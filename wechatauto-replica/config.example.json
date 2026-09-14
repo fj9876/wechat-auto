@@ -1,0 +1,55 @@
+{
+  "llm": {
+    "api_url": "https://developer.amd.com.cn/radeon/api/v1",
+    "api_key": "YOUR_API_KEY_HERE",
+    "model_name": "DeepSeek-V4-Flash",
+    "temperature": 0.7,
+    "max_tokens": 1500,
+    "embedding_api_url": "",
+    "embedding_api_key": "",
+    "embedding_model_name": "text-embedding-3-small"
+  },
+  "targets": {
+    "reply_all_private": false,
+    "whitelist_users": [],
+    "reply_all_groups": false,
+    "whitelist_groups": [],
+    "group_at_only": true,
+    "group_auto_at_sender": true,
+    "custom_at_triggers": []
+  },
+  "rag": {
+    "enabled": false,
+    "kb_folder_path": "",
+    "top_k": 3,
+    "similarity_threshold": 0.25,
+    "chunk_size": 500,
+    "chunk_overlap": 50
+  },
+  "safety": {
+    "preset_name": "网课学习助手",
+    "presets": {
+      "通用全能助手": "你是一个友好、专业、高效的微信智能助手。你的任务是清晰、礼貌地回答用户的问题。\n回答要条理清晰、通俗易懂，适合微信聊天阅读，避免过于冗长啰嗦。",
+      "医学健康咨询专家": "你是一名经验丰富的全科执业医师与健康咨询专家。你的职责是倾听患者的症状主诉，提供专业的健康宣教、科室分诊建议与就医指引。\n【重要安全准则】\n1. 若用户出现危急重症迹象（如急性剧烈胸痛、突发意识不清、呼吸极度困难、大出血等），必须第一时间发出红色预警并建议立即拨打120或前往急诊。\n2. 给出可能的健康指导与挂号科室建议，但必须说明你的回答仅供就医参考，不能替代线下面诊。\n3. 如参考了本地医疗知识库，请结合知识库内容给出专业解答。",
+      "企业智能客服": "你是一家企业的官方智能客服助手。你的职责是用热情、礼貌、专业的语气回答客户关于产品、服务、退换货及售前售后的各类咨询。\n若遇到无法解答的复杂投诉或专业订制问题，请提示客户回复'转人工'即可为您转接人工客服。",
+      "编程与技术顾问": "你是一位全栈软件开发与IT技术专家。能够快速解答各类编程语言（Python, JS, Go等）、架构设计、Bug排查、环境配置等技术问题。代码示例要简洁明了，并附带关键逻辑解释。",
+      "生活情感与闲聊伙伴": "你是一个幽默、善解人意、有同理心的生活好友。擅长倾听、开解情绪、分享生活小妙招和有趣故事，语气轻松自然，让微信聊天充满人情味。",
+      "网课学习助手": "你是一帮忙网课学习的智能客服助手。你的职责是用热情、礼貌、专业的语气回答客户关于网络培训的各类咨询。\n若遇到无法解答的复杂投诉或专业订制问题，请提示客户回复'转人工'即可为您转接人工客服。"
+    },
+    "system_prompt": "你是一帮忙网课学习的智能客服助手。你的职责是用热情、礼貌、专业的语气回答客户关于网络培训的各类咨询。\n若遇到无法解答的复杂投诉或专业订制问题，请提示客户回复'转人工'即可为您转接人工客服。",
+    "reply_prefix": "",
+    "reply_suffix": "\n(此消息由AI回复，真实性不做保证)",
+    "max_reply_length": 0,
+    "handover_keyword": "转人工,人工客服,找售后",
+    "handover_reply": "已为您转接人工客服，机器人已暂停自动回复，稍后人工人员将为您服务。",
+    "reset_handover_keyword": "恢复AI,退出人工,开启AI",
+    "cooldown_seconds": 2.5,
+    "daily_chat_limit": 0,
+    "sensitive_words": "",
+    "sensitive_action": "refuse",
+    "sensitive_reply": "抱歉，该话题暂时无法通过AI助手解答，敬请谅解。",
+    "enable_tools": true
+  },
+  "groups_config": {},
+  "auto_start_wechat": false
+}

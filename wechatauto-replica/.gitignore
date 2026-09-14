@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Runtime logs
+wxauto_logs/
+@AutomationLog.txt
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+COMMIT_MSG.txt
+
+# sibling repo
+WeChatBot-new/
+
+# runtime scratch
+tmp_sns_mapping/
