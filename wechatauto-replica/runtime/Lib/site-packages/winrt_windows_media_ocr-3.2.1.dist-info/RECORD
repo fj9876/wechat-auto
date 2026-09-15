@@ -1,0 +1,10 @@
+winrt/_winrt_windows_media_ocr.cp312-win_amd64.pyd,sha256=1DRlO1qQwc6D8Bpr3pYu1M2lGONYVINtG1VLk2EprfI,109056
+winrt/_winrt_windows_media_ocr.pyi,sha256=PlE8IGqGFscRsD452nK-Uc0pr6mSYU5Epfh-UFgtfs0,3358
+winrt/windows/media/ocr/__init__.py,sha256=twjHDgSH6KH72uPae-X4pi_jhh_Kb9J5Pzbsmy_ZyE4,284
+winrt/windows/media/ocr/__pycache__/__init__.cpython-312.pyc,,
+winrt/windows/media/ocr/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+winrt_windows_media_ocr-3.2.1.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+winrt_windows_media_ocr-3.2.1.dist-info/METADATA,sha256=jDFxUYOubtHGviVRkxGhK5uEdXGptDE6kAmt8RSWwi4,1259
+winrt_windows_media_ocr-3.2.1.dist-info/RECORD,,
+winrt_windows_media_ocr-3.2.1.dist-info/WHEEL,sha256=8UP9x9puWI0P1V_d7K2oMTBqfeLNm21CTzZ_Ptr0NXU,101
+winrt_windows_media_ocr-3.2.1.dist-info/top_level.txt,sha256=BzwQb4dZRt0NxCXi10ARjWsox7Asmtf_lXrw_KR-D_E,6

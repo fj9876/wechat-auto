@@ -1,0 +1,46 @@
+Metadata-Version: 2.1
+Name: winsdk
+Version: 1.0.0b10
+Summary: Python bindings for the Windows SDK
+Home-page: https://github.com/pywinrt/python-winsdk
+Author: Microsoft Corporation
+License: MIT
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Win32 (MS Windows)
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: Microsoft :: Windows :: Windows 10
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Classifier: Topic :: System :: Operating System
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# Python Windows SDK
+
+Python bindings for the Windows SDK.
+
+This is a community-supported version of the unmaintained [winrt] package.
+
+[winrt]: https://pypi.org/project/winrt
+
+
+## Installation
+
+This package is distributed on PyPI as the [winsdk] package.
+
+    # use your favorite environment manager
+    poetry add winsdk
+    pipenv install winsdk
+    pip install winsdk
+
+[winsdk]: https://pypi.org/project/winsdk
+
+
+## Documentation
+
+https://python-winsdk.readthedocs.io/en/latest/

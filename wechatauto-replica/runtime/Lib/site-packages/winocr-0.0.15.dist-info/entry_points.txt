@@ -1,0 +1,2 @@
+[console_scripts]
+winocr_serve = winocr:serve
