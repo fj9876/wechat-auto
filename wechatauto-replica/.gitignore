@@ -11,27 +11,44 @@ dist/
 
 # Runtime logs
 wxauto_logs/
+wechatauto_logs/
 @AutomationLog.txt
 *.log
+COMMIT_MSG.txt
 
 # Virtual environments
 .venv/
 venv/
 env/
 
+# Config & secrets
+config.json
+
+# Local data & cache
+data/
+.rag_cache.json
+wechatauto文件下载/
+tmp_sns_mapping/
+
 # IDE
 .idea/
 .vscode/
 *.swp
-COMMIT_MSG.txt
 
-# sibling repo
+# Sibling repo & scratch
 WeChatBot-new/
+scratch/
+.tempmediaStorage/
 
-# runtime scratch
-tmp_sns_mapping/
-
-# AI Models
-models/
+# AI Models (仅推送文件夹名称及内部路径，通过 .gitkeep 保持目录结构)
+models/**
+!models/
+!models/**/
+!models/**/.gitkeep
 *.bin
 *.incomplete
+.cache/
+
+# Portable Runtime 全量推送
+!runtime/
+!runtime/**
