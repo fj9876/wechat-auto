@@ -30,3 +30,8 @@ WeChatBot-new/
 
 # runtime scratch
 tmp_sns_mapping/
+
+# AI Models
+models/
+*.bin
+*.incomplete

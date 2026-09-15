@@ -2206,6 +2206,11 @@ class WeChatAIAgentApp:
             font=("Microsoft YaHei UI", 9)
         )
         self.cb_voice_model.grid(row=0, column=1, sticky="w", padx=6, pady=4)
+        self.cb_voice_model.bind("<<ComboboxSelected>>", lambda e: self._update_model_status_label())
+
+        self.lbl_voice_model_status = tk.Label(self.f_voice_local, text="", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"))
+        self.lbl_voice_model_status.grid(row=1, column=1, sticky="w", padx=6, pady=(0, 4))
+        self._update_model_status_label()
 
         tk.Label(self.f_voice_local, text="推理硬件设备:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=2, sticky="w", padx=(16, 0), pady=4)
         curr_dev = getattr(self.config.voice, "whisper_device", "auto") or "auto"
@@ -2436,6 +2441,27 @@ class WeChatAIAgentApp:
             cursor="hand2"
         )
         btn_save_bot.pack(anchor="center")
+
+    def _update_model_status_label(self):
+        """检查并更新本地 Whisper 模型在项目 models/ 目录中的离线就绪状态"""
+        if not hasattr(self, "lbl_voice_model_status") or not hasattr(self, "var_voice_model"):
+            return
+        raw_m = self.var_voice_model.get().split()[0].strip()
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(project_root, "models")
+        cand1 = os.path.join(models_dir, f"whisper-{raw_m}")
+        cand2 = os.path.join(models_dir, raw_m)
+        
+        is_ready = False
+        for c in (cand1, cand2):
+            if os.path.isdir(c) and os.path.exists(os.path.join(c, "model.bin")):
+                is_ready = True
+                break
+                
+        if is_ready:
+            self.lbl_voice_model_status.config(text=f"● 本地离线已就绪 (已存入项目 models/whisper-{raw_m})", fg=self.COLOR_SUCCESS)
+        else:
+            self.lbl_voice_model_status.config(text="○ 本地未缓存 (首次运行将自动下载至 models/ 目录)", fg=self.COLOR_WARNING)
 
     def _on_voice_engine_changed(self, event=None):
         eng_sel = self.var_voice_engine.get().lower()

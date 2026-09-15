@@ -127,8 +127,7 @@ class VoiceRecognizer:
         self.config = config
 
     def _get_local_model(self):
-        """懒加载本地 faster-whisper 模型"""
-        # 默认配置国内加速镜像，保障模型顺畅拉取
+        """懒加载本地 faster-whisper 模型 (支持优先从项目 models/ 目录秒速离线加载)"""
         if "HF_ENDPOINT" not in os.environ:
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -138,6 +137,24 @@ class VoiceRecognizer:
         spec_key = f"{model_name}_{device_req}"
         if self._local_model is not None and self._loaded_model_spec == spec_key:
             return self._local_model
+
+        # 检查项目内的 models/ 目录
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        models_dir = os.path.join(project_root, "models")
+        os.makedirs(models_dir, exist_ok=True)
+
+        # 优先检索本地项目已经下载的模型文件夹
+        candidate_paths = [
+            os.path.join(models_dir, f"whisper-{model_name}"),
+            os.path.join(models_dir, model_name),
+            os.path.join(models_dir, f"faster-whisper-{model_name}"),
+        ]
+        
+        actual_model_path_or_name = model_name
+        for p in candidate_paths:
+            if os.path.isdir(p) and (os.path.exists(os.path.join(p, "model.bin")) or os.path.exists(os.path.join(p, "config.json"))):
+                actual_model_path_or_name = p
+                break
 
         from faster_whisper import WhisperModel
 
@@ -157,11 +174,21 @@ class VoiceRecognizer:
                 compute_type = "int8"
 
         try:
-            model = WhisperModel(model_name, device=device, compute_type=compute_type)
+            model = WhisperModel(
+                actual_model_path_or_name,
+                device=device,
+                compute_type=compute_type,
+                download_root=models_dir
+            )
         except Exception as e:
             # 如果 CUDA 初始化失败 (如显存不足或未装 cuDNN)，自动回退到 CPU
             if device == "cuda":
-                model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                model = WhisperModel(
+                    actual_model_path_or_name,
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=models_dir
+                )
             else:
                 raise e
 
