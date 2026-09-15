@@ -15,9 +15,21 @@ import sys
 import time
 import queue
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext, simpledialog
 from typing import Dict, Any, List, Optional
+
+# faster-whisper 模型极速镜像下载地址 (直达模型文件列表，支持单文件高速下载)
+WHISPER_MODEL_DOWNLOAD_URLS: Dict[str, str] = {
+    "tiny": "https://hf-mirror.com/Systran/faster-whisper-tiny",
+    "base": "https://hf-mirror.com/Systran/faster-whisper-base",
+    "small": "https://hf-mirror.com/Systran/faster-whisper-small",
+    "medium": "https://hf-mirror.com/Systran/faster-whisper-medium",
+    "large-v3": "https://hf-mirror.com/Systran/faster-whisper-large-v3",
+    "large-v2": "https://hf-mirror.com/Systran/faster-whisper-large-v2",
+    "large-v1": "https://hf-mirror.com/Systran/faster-whisper-large-v1",
+}
 
 # 启用 Windows 高 DPI 感知，确保在高分辨率屏幕上字体与控件清晰细腻
 try:
@@ -78,7 +90,7 @@ class WeChatAIAgentApp:
 
         # 构建 UI 界面
         self._create_header_bar()
-        self._create_notebook()
+        self._create_vertical_layout()
         self._create_status_bar()
 
         # 启动后台事件轮询与心跳
@@ -215,41 +227,164 @@ class WeChatAIAgentApp:
         self.btn_toggle_autoreply.pack(side="left", padx=6)
 
     # -------------------------------------------------------------------------
-    # 主体多标签页 Notebook
+    # 主体竖向导航布局 (左侧功能侧边栏 + 右侧功能内容区)
     # -------------------------------------------------------------------------
-    def _create_notebook(self):
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=8)
+    def _create_vertical_layout(self):
+        self.main_container = tk.Frame(self.root, bg=self.COLOR_BG)
+        self.main_container.pack(fill="both", expand=True)
 
-        # Tab 1: 实时运行看板与消息日志
-        self.tab_dashboard = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_dashboard, text=" 📊 运行看板与实时日志 ")
+        # 1. 左侧竖向功能导航菜单侧边栏 (固定宽度，深色现代风格)
+        self.sidebar_frame = tk.Frame(self.main_container, bg="#1e293b", width=220)
+        self.sidebar_frame.pack(side="left", fill="y", padx=(10, 0), pady=(8, 8))
+        self.sidebar_frame.pack_propagate(False)
+
+        # 侧边栏顶部小标题指示
+        nav_header = tk.Frame(self.sidebar_frame, bg="#0f172a", height=44)
+        nav_header.pack(fill="x", side="top")
+        tk.Label(
+            nav_header,
+            text="🎛️  功能导航菜单",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg="#0f172a",
+            fg="#cbd5e1"
+        ).pack(side="left", padx=16, pady=11)
+
+        # 竖向菜单项定义 (依序排列 6 个主要功能)
+        self.nav_items = [
+            ("dashboard", "📊  运行看板与实时日志"),
+            ("targets",   "👥  回复对象配置"),
+            ("llm",       "🧠  大模型配置"),
+            ("rag",       "📚  本地知识库 (RAG)"),
+            ("media",     "🎙️  多模态与媒体设置"),
+            ("sandbox",   "🧪  交互测试沙盒"),
+        ]
+
+        # 导航按钮容器
+        btn_list_box = tk.Frame(self.sidebar_frame, bg="#1e293b")
+        btn_list_box.pack(fill="x", padx=8, pady=10)
+
+        self.nav_buttons: Dict[str, tk.Button] = {}
+        self.active_tab = "dashboard"
+
+        for key, text in self.nav_items:
+            btn = tk.Button(
+                btn_list_box,
+                text=text,
+                command=lambda k=key: self._switch_tab(k),
+                font=("Microsoft YaHei UI", 10),
+                anchor="w",
+                padx=14,
+                pady=10,
+                bd=0,
+                relief="flat",
+                cursor="hand2",
+                bg="#1e293b",
+                fg="#94a3b8",
+                activebackground="#334155",
+                activeforeground="#ffffff"
+            )
+            btn.pack(fill="x", pady=3)
+
+            # 绑定鼠标悬浮交互动效
+            def _bind_hover(b: tk.Button, k: str):
+                b.bind("<Enter>", lambda e: b.configure(bg="#334155", fg="#f8fafc") if self.active_tab != k else None)
+                b.bind("<Leave>", lambda e: b.configure(bg="#1e293b", fg="#94a3b8") if self.active_tab != k else None)
+            _bind_hover(btn, key)
+
+            self.nav_buttons[key] = btn
+
+        # 侧边栏底部版本与就绪提示
+        side_footer = tk.Frame(self.sidebar_frame, bg="#1e293b")
+        side_footer.pack(side="bottom", fill="x", pady=14)
+        tk.Label(
+            side_footer,
+            text="WeChat-AIAgent v2.0\n原生桌面客户端",
+            font=("Microsoft YaHei UI", 8),
+            bg="#1e293b",
+            fg="#64748b",
+            justify="center"
+        ).pack(anchor="center")
+
+        # 2. 右侧功能内容区域
+        self.content_container = tk.Frame(self.main_container, bg=self.COLOR_BG)
+        self.content_container.pack(side="right", fill="both", expand=True, padx=(8, 10), pady=(6, 8))
+
+        # 构建 6 个功能子面板容器 (完全保留原有各面板内部控件树与事件处理)
+        self.tab_dashboard = ttk.Frame(self.content_container)
         self._build_dashboard_tab()
 
-        # Tab 2: 回复对象配置
-        self.tab_targets = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_targets, text=" 👥 回复对象配置 ")
+        self.tab_targets = ttk.Frame(self.content_container)
         self._build_targets_tab()
 
-        # Tab 3: 大模型配置
-        self.tab_llm = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_llm, text=" 🧠 大模型配置 ")
+        self.tab_llm = ttk.Frame(self.content_container)
         self._build_llm_tab()
 
-        # Tab 4: 本地知识库 (RAG)
-        self.tab_rag = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_rag, text=" 📚 本地知识库 (RAG) ")
+        self.tab_rag = ttk.Frame(self.content_container)
         self._build_rag_tab()
 
-        # Tab 5: 多模态与媒体设置
-        self.tab_media = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_media, text=" 🎙️ 多模态与媒体设置 ")
+        self.tab_media = ttk.Frame(self.content_container)
         self._build_media_tab()
 
-        # Tab 6: 在线测试沙盒
-        self.tab_sandbox = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_sandbox, text=" 🧪 交互测试沙盒 ")
+        self.tab_sandbox = ttk.Frame(self.content_container)
         self._build_sandbox_tab()
+
+        self.tab_panels: Dict[str, ttk.Frame] = {
+            "dashboard": self.tab_dashboard,
+            "targets": self.tab_targets,
+            "llm": self.tab_llm,
+            "rag": self.tab_rag,
+            "media": self.tab_media,
+            "sandbox": self.tab_sandbox,
+        }
+
+        # 兼容性包装类 (防止旧逻辑引用 self.notebook 发生 AttributeError)
+        class _NotebookCompat:
+            def __init__(self, app):
+                self.app = app
+            def select(self, tab=None):
+                if tab is not None:
+                    for k, p in self.app.tab_panels.items():
+                        if p == tab or k == tab:
+                            self.app._switch_tab(k)
+                            break
+            def index(self, tab):
+                return 0
+        self.notebook = _NotebookCompat(self)
+
+        # 默认激活 Tab 1: 运行看板与实时日志
+        self._switch_tab("dashboard")
+
+    def _switch_tab(self, tab_key: str):
+        """切换右侧内容面板并更新左侧垂直导航项高亮"""
+        if tab_key not in self.tab_panels:
+            return
+        self.active_tab = tab_key
+
+        # 隐藏所有面板，展示当前选中的面板
+        for key, panel in self.tab_panels.items():
+            if key == tab_key:
+                panel.pack(fill="both", expand=True)
+            else:
+                panel.pack_forget()
+
+        # 更新左侧导航按钮视觉高亮 (选中项深蓝高亮背景加粗亮白)
+        for key, btn in self.nav_buttons.items():
+            if key == tab_key:
+                btn.configure(
+                    bg=self.COLOR_PRIMARY,
+                    fg="#ffffff",
+                    font=("Microsoft YaHei UI", 10, "bold"),
+                    activebackground=self.COLOR_PRIMARY,
+                    activeforeground="#ffffff"
+                )
+            else:
+                btn.configure(
+                    bg="#1e293b",
+                    fg="#94a3b8",
+                    font=("Microsoft YaHei UI", 10),
+                    activebackground="#334155",
+                    activeforeground="#ffffff"
+                )
 
     # -------------------------------------------------------------------------
     # 底部状态栏
@@ -1347,7 +1482,8 @@ class WeChatAIAgentApp:
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=1100)
+        canvas_win = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
 
         # 鼠标滚轮绑定
@@ -2102,7 +2238,8 @@ class WeChatAIAgentApp:
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=1100)
+        canvas_win = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
 
         def _on_mousewheel(event):
@@ -2202,14 +2339,33 @@ class WeChatAIAgentApp:
             textvariable=self.var_voice_model,
             values=list(model_map.values()),
             state="readonly",
-            width=36,
+            width=28,
             font=("Microsoft YaHei UI", 9)
         )
         self.cb_voice_model.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         self.cb_voice_model.bind("<<ComboboxSelected>>", lambda e: self._update_model_status_label())
 
-        self.lbl_voice_model_status = tk.Label(self.f_voice_local, text="", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"))
-        self.lbl_voice_model_status.grid(row=1, column=1, sticky="w", padx=6, pady=(0, 4))
+        f_model_status_box = tk.Frame(self.f_voice_local, bg=self.COLOR_CARD)
+        f_model_status_box.grid(row=1, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+
+        self.lbl_voice_model_status = tk.Label(f_model_status_box, text="", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"))
+        self.lbl_voice_model_status.pack(side="left")
+
+        self.btn_open_model_download = tk.Button(
+            f_model_status_box,
+            text="🌐 打开模型极速下载网页",
+            command=self._on_open_model_download_url,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg="#eff6ff",
+            fg="#2563eb",
+            activebackground="#dbeafe",
+            activeforeground="#1d4ed8",
+            relief="flat",
+            padx=8,
+            pady=1,
+            cursor="hand2"
+        )
+        self.btn_open_model_download.pack(side="left", padx=10)
         self._update_model_status_label()
 
         tk.Label(self.f_voice_local, text="推理硬件设备:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=2, sticky="w", padx=(16, 0), pady=4)
@@ -2225,7 +2381,7 @@ class WeChatAIAgentApp:
             textvariable=self.var_voice_device,
             values=list(dev_map.values()),
             state="readonly",
-            width=36,
+            width=28,
             font=("Microsoft YaHei UI", 9)
         )
         self.cb_voice_device.grid(row=0, column=3, sticky="w", padx=6, pady=4)
@@ -2256,8 +2412,19 @@ class WeChatAIAgentApp:
         f_vt_in.pack(fill="x", pady=4)
 
         tk.Label(f_vt_in, text="测试音频文件路径:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
-        self.var_voice_test_path = tk.StringVar(value="")
-        ttk.Entry(f_vt_in, textvariable=self.var_voice_test_path, width=54, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
+        self.btn_run_voice_test = tk.Button(
+            f_vt_in,
+            text="⚡ 开始测试转写",
+            command=self._on_run_audio_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=3,
+            cursor="hand2"
+        )
+        self.btn_run_voice_test.pack(side="right", padx=4)
 
         btn_browse_audio = tk.Button(
             f_vt_in,
@@ -2271,21 +2438,10 @@ class WeChatAIAgentApp:
             pady=3,
             cursor="hand2"
         )
-        btn_browse_audio.pack(side="left", padx=4)
+        btn_browse_audio.pack(side="right", padx=4)
 
-        self.btn_run_voice_test = tk.Button(
-            f_vt_in,
-            text="⚡ 开始测试转写",
-            command=self._on_run_audio_test,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            bg=self.COLOR_PRIMARY,
-            fg="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=3,
-            cursor="hand2"
-        )
-        self.btn_run_voice_test.pack(side="left", padx=4)
+        self.var_voice_test_path = tk.StringVar(value="")
+        ttk.Entry(f_vt_in, textvariable=self.var_voice_test_path, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
 
         tk.Label(lf_vtest, text="音频转写输出文本与用时反馈:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"), fg=self.COLOR_MUTED).pack(anchor="w", pady=(6, 2))
         self.txt_voice_test_result = scrolledtext.ScrolledText(lf_vtest, wrap="word", height=4, font=("Microsoft YaHei UI", 9), bd=1, relief="solid")
@@ -2380,8 +2536,19 @@ class WeChatAIAgentApp:
         f_it_in.pack(fill="x", pady=4)
 
         tk.Label(f_it_in, text="测试图片文件路径:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
-        self.var_image_test_path = tk.StringVar(value="")
-        ttk.Entry(f_it_in, textvariable=self.var_image_test_path, width=54, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
+        self.btn_run_image_test = tk.Button(
+            f_it_in,
+            text="⚡ 开始测试识别",
+            command=self._on_run_image_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#7c3aed",
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=3,
+            cursor="hand2"
+        )
+        self.btn_run_image_test.pack(side="right", padx=4)
 
         btn_browse_img = tk.Button(
             f_it_in,
@@ -2395,21 +2562,10 @@ class WeChatAIAgentApp:
             pady=3,
             cursor="hand2"
         )
-        btn_browse_img.pack(side="left", padx=4)
+        btn_browse_img.pack(side="right", padx=4)
 
-        self.btn_run_image_test = tk.Button(
-            f_it_in,
-            text="⚡ 开始测试识别",
-            command=self._on_run_image_test,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            bg="#7c3aed",
-            fg="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=3,
-            cursor="hand2"
-        )
-        self.btn_run_image_test.pack(side="left", padx=4)
+        self.var_image_test_path = tk.StringVar(value="")
+        ttk.Entry(f_it_in, textvariable=self.var_image_test_path, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
 
         f_it_p = tk.Frame(lf_itest, bg=self.COLOR_CARD)
         f_it_p.pack(fill="x", pady=(2, 6))
@@ -2442,26 +2598,56 @@ class WeChatAIAgentApp:
         )
         btn_save_bot.pack(anchor="center")
 
+    def _check_whisper_model_ready(self, raw_m: str) -> tuple[bool, str]:
+        """检查指定规格的 Whisper 模型是否已完整离线存在于本地 models/ 目录"""
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(project_root, "models")
+        cand1 = os.path.join(models_dir, f"whisper-{raw_m}")
+        cand2 = os.path.join(models_dir, raw_m)
+        cand3 = os.path.join(models_dir, f"faster-whisper-{raw_m}")
+        
+        for c in (cand1, cand2, cand3):
+            if os.path.isdir(c) and (
+                os.path.exists(os.path.join(c, "model.bin")) or 
+                os.path.exists(os.path.join(c, "model.safetensors"))
+            ):
+                return True, c
+        target_path = os.path.join(models_dir, f"whisper-{raw_m}")
+        return False, target_path
+
+    def _on_open_model_download_url(self):
+        """主动调用默认浏览器打开当前选中 Whisper 模型的极速镜像下载页面"""
+        raw_m = self.var_voice_model.get().split()[0].strip()
+        url = WHISPER_MODEL_DOWNLOAD_URLS.get(raw_m, f"https://hf-mirror.com/Systran/faster-whisper-{raw_m}")
+        webbrowser.open(url)
+
     def _update_model_status_label(self):
         """检查并更新本地 Whisper 模型在项目 models/ 目录中的离线就绪状态"""
         if not hasattr(self, "lbl_voice_model_status") or not hasattr(self, "var_voice_model"):
             return
         raw_m = self.var_voice_model.get().split()[0].strip()
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        models_dir = os.path.join(project_root, "models")
-        cand1 = os.path.join(models_dir, f"whisper-{raw_m}")
-        cand2 = os.path.join(models_dir, raw_m)
-        
-        is_ready = False
-        for c in (cand1, cand2):
-            if os.path.isdir(c) and os.path.exists(os.path.join(c, "model.bin")):
-                is_ready = True
-                break
-                
+        is_ready, target_dir = self._check_whisper_model_ready(raw_m)
+
         if is_ready:
-            self.lbl_voice_model_status.config(text=f"● 本地离线已就绪 (已存入项目 models/whisper-{raw_m})", fg=self.COLOR_SUCCESS)
+            self.lbl_voice_model_status.config(
+                text=f"● 本地离线已就绪 (已存入项目 models/whisper-{raw_m})", 
+                fg=self.COLOR_SUCCESS
+            )
+            if hasattr(self, "btn_open_model_download"):
+                self.btn_open_model_download.config(
+                    text="🌐 查看模型源网页",
+                    fg="#2563eb"
+                )
         else:
-            self.lbl_voice_model_status.config(text="○ 本地未缓存 (首次运行将自动下载至 models/ 目录)", fg=self.COLOR_WARNING)
+            self.lbl_voice_model_status.config(
+                text="○ 本地缺失模型 (点击测试将自动调用浏览器下载)", 
+                fg=self.COLOR_WARNING
+            )
+            if hasattr(self, "btn_open_model_download"):
+                self.btn_open_model_download.config(
+                    text="🌐 打开浏览器下载此模型",
+                    fg="#dc2626"
+                )
 
     def _on_voice_engine_changed(self, event=None):
         eng_sel = self.var_voice_engine.get().lower()
@@ -2499,11 +2685,53 @@ class WeChatAIAgentApp:
             self.var_voice_test_path.set(norm_path)
 
     def _on_run_audio_test(self):
-        """异步执行语音识别转写测试"""
+        """异步执行语音识别转写测试 (当本地缺失模型时自动调用本地浏览器打开下载地址)"""
         audio_path = self.var_voice_test_path.get().strip()
         if not audio_path or not os.path.exists(audio_path):
             messagebox.showwarning("提示", "请先选择真实存在的测试音频文件！")
             return
+
+        is_local = "cloud" not in self.var_voice_engine.get().lower()
+        raw_m = self.var_voice_model.get().split()[0].strip()
+
+        # 本地模式下，若本地缺失该模型文件，自动调用默认浏览器跳转下载
+        if is_local:
+            is_ready, target_dir = self._check_whisper_model_ready(raw_m)
+            if not is_ready:
+                dl_url = WHISPER_MODEL_DOWNLOAD_URLS.get(raw_m, f"https://hf-mirror.com/Systran/faster-whisper-{raw_m}")
+                webbrowser.open(dl_url)
+
+                # 收集当前本地已就绪的模型列表提供给用户快速选择
+                ready_list = []
+                for m_cand in ["tiny", "base", "small", "medium", "large-v3"]:
+                    ok_cand, _ = self._check_whisper_model_ready(m_cand)
+                    if ok_cand:
+                        ready_list.append(m_cand)
+                ready_tip = f"【当前本地已就绪模型】: {', '.join(ready_list)}" if ready_list else "当前本地 models/ 目录暂无已下载模型"
+
+                tip_info = (
+                    f"⚠️ 【检测到本地缺失模型】: whisper-{raw_m}\n"
+                    f"----------------------------------------------------------------------\n"
+                    f"🌐 已自动为您调用本地系统默认浏览器打开该模型下载页面：\n"
+                    f"👉 {dl_url}\n\n"
+                    f"📁 【下载后模型存放路径】:\n"
+                    f"请将下载的模型权重与配置文件 (主要包含 model.bin, config.json, vocabulary.json 等) 放入：\n"
+                    f"👉 {target_dir}\n\n"
+                    f"💡 贴士：{ready_tip}\n"
+                    f"• 如需立即体验转写，可直接在上方下拉框切换为已就绪模型；\n"
+                    f"• 或待浏览器下载文件并放入上述文件夹后，重新点击【⚡ 开始测试转写】即可秒速离线识别！"
+                )
+                self.txt_voice_test_result.delete("1.0", "end")
+                self.txt_voice_test_result.insert("1.0", tip_info)
+
+                messagebox.showinfo(
+                    "模型下载已自动唤起",
+                    f"检测到本地缺少 whisper-{raw_m} 模型文件。\n\n"
+                    f"已自动为您在浏览器中打开极速镜像下载地址：\n{dl_url}\n\n"
+                    f"下载后请将文件放置于项目目录：\n{target_dir}\n\n"
+                    f"{ready_tip}"
+                )
+                return
 
         self.btn_run_voice_test.configure(text="⏳ 正在转写中...", state="disabled")
         self.txt_voice_test_result.delete("1.0", "end")
@@ -2511,8 +2739,7 @@ class WeChatAIAgentApp:
 
         # 抓取当前界面配置构造测试用 VoiceConfig
         cfg = self.config.voice.model_copy()
-        cfg.engine = "cloud" if "cloud" in self.var_voice_engine.get().lower() else "local"
-        raw_m = self.var_voice_model.get().split()[0].strip()
+        cfg.engine = "local" if is_local else "cloud"
         cfg.whisper_model = raw_m
         raw_dev = self.var_voice_device.get().split()[0].strip().lower()
         cfg.whisper_device = raw_dev
@@ -2539,19 +2766,41 @@ class WeChatAIAgentApp:
                             f"• 识别文本:\n{text}"
                         )
                     else:
-                        content = (
-                            f"❌ 【语音转写失败】\n"
-                            f"• 使用引擎: {eng}\n"
-                            f"• 耗时: {cost} 毫秒\n"
-                            f"• 错误信息: {text}"
-                        )
+                        err_str = str(text)
+                        if is_local and any(k in err_str.lower() for k in ("not found", "model", "download", "connection", "huggingface", "url")):
+                            dl_url = WHISPER_MODEL_DOWNLOAD_URLS.get(raw_m, f"https://hf-mirror.com/Systran/faster-whisper-{raw_m}")
+                            webbrowser.open(dl_url)
+                            content = (
+                                f"❌ 【语音转写失败 - 本地模型缺失或下载受阻】\n"
+                                f"• 错误详情: {err_str}\n\n"
+                                f"🌐 已自动为您调用系统默认浏览器打开该模型下载页面：\n{dl_url}\n"
+                                f"请下载后放入项目 models/whisper-{raw_m} 文件夹中重新测试。"
+                            )
+                        else:
+                            content = (
+                                f"❌ 【语音转写失败】\n"
+                                f"• 使用引擎: {eng}\n"
+                                f"• 耗时: {cost} 毫秒\n"
+                                f"• 错误信息: {err_str}"
+                            )
                     self.txt_voice_test_result.insert("1.0", content)
                 self.dispatch_ui(on_done)
             except Exception as e:
                 def on_err():
                     self.btn_run_voice_test.configure(text="⚡ 开始测试转写", state="normal")
                     self.txt_voice_test_result.delete("1.0", "end")
-                    self.txt_voice_test_result.insert("1.0", f"❌ 异常报错: {e}")
+                    err_str = str(e)
+                    if is_local and any(k in err_str.lower() for k in ("not found", "model", "download", "connection", "huggingface", "url")):
+                        dl_url = WHISPER_MODEL_DOWNLOAD_URLS.get(raw_m, f"https://hf-mirror.com/Systran/faster-whisper-{raw_m}")
+                        webbrowser.open(dl_url)
+                        self.txt_voice_test_result.insert(
+                            "1.0",
+                            f"❌ 【本地语音模型异常】: {err_str}\n\n"
+                            f"🌐 已自动为您调用浏览器打开下载页面：{dl_url}\n"
+                            f"请下载模型后放置于 models/whisper-{raw_m} 目录。"
+                        )
+                    else:
+                        self.txt_voice_test_result.insert("1.0", f"❌ 异常报错: {err_str}")
                 self.dispatch_ui(on_err)
 
         threading.Thread(target=worker, daemon=True).start()
