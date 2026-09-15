@@ -1,318 +1,234 @@
-[**English**](README.md) | [**中文**](README.zh-CN.md)
+# 🤖 WeChat-AIAgent 微信 4.x 智能自动回复助手
 
-# wechatauto-replica — WeChat 4.x Windows Automation (wxauto-compatible)
+<div align="center">
 
-![PyPI version](https://img.shields.io/pypi/v/wechatauto-replica)
-![PyPI downloads](https://img.shields.io/pypi/dw/wechatauto-replica)
-![Python](https://img.shields.io/pypi/pyversions/wechatauto-replica)
-![License](https://img.shields.io/github/license/fanyuantaier/wechatauto-replica)
-![GitHub stars](https://img.shields.io/github/stars/fanyuantaier/wechatauto-replica)
+> **专为微信 4.x Windows 客户端打造的个人 AI 智能助理**  
+> 集成 **本地原生桌面 GUI (现代竖向导航)** · **多主流大模型 (LLM)** · **本地私有知识库 (RAG)** · **离线/云端语音识别 (ASR)** · **多模态视觉与 OCR 解析** · **群管与自动踢人**
 
-> [!NOTE]
-> **📢 维护状态 / Maintenance Notice**
-> 本人因今年升高一，开学后几乎没有时间继续更新本项目（如果有时间，争取周日更新）。遇到问题请自行在 Issues 区讨论，或询问 AI 协助解决。感谢支持！
->
-> I'm starting senior high school and will register tomorrow (Aug 23). After school starts I'll have almost no time to keep updating (Sundays if possible). Please discuss issues in the Issues section or ask an AI. Thanks for your support!
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://microsoft.com/windows)
+[![WeChat](https://img.shields.io/badge/WeChat-4.x%20(4.1.12%2B)-brightgreen.svg)](https://weixin.qq.com)
+[![Python](https://img.shields.io/badge/Python-3.9%20~%203.12-blue.svg)](https://python.org)
+[![faster-whisper](https://img.shields.io/badge/ASR-faster--whisper%20(Local)-orange.svg)](https://github.com/SYSTRAN/faster-whisper)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+</div>
 
-Automate the **WeChat 4.x Windows desktop client** (not the web version): read messages, listen in real time, download media, export full history, read Moments (朋友圈), and send messages — by driving the local client directly.
+---
 
-> **Current version:** 1.2.2.2 · Windows 10/11 · Python 3.9+ (verified on 3.12) · WeChat **4.1.12+**
->
-> **Why this project exists:** the classic [wxauto](https://github.com/cluic/wxauto) relies on the UI Automation tree, which WeChat 4.x broke with self-drawn rendering (no accessibility nodes). wechatauto-replica is a drop-in-style replacement: messages are read through **local database decryption** (SQLCipher 4), and sending uses a **UIA + OCR hybrid** driver that auto-falls back between engines.
+## 📖 项目来源与背景说明
 
-![Reading encrypted WeChat 4.x databases](docs/demo_db_files.gif)
+本项目底层自动化引擎深度衍生并重构自开源项目 [wechatauto-replica](https://github.com/fanyuantaier/wechatauto-replica) —— 该项目突破了经典 wxauto 库因微信 4.x 换用自绘图形渲染引擎而导致 UI 自动化树失效的限制，创新地实现了：
+1. **本地内存解密技术**：直接从微信 4.x 进程提取秘钥，无侵入、无风险地解密本地 `contact.db`、`message_*.db` 与 `sns.db`（SQLCipher 4），实现 100% 无损、高速的消息即时监听与历史提取；
+2. **混合发信驱动引擎**：结合 Qt 内存可访问性热激活、UIAutomation 与 Windows 原生硬件加速 WinRT OCR 屏幕文字定位技术，实现了高稳定性的自动打字、发信与群成员管理。
 
-*Reading the encrypted `contact.db` / `message_*.db` / `sns.db` files directly from `xwechat_files/.../db_storage/` — no web API, all local.*
+在上述底层能力的基础之上，本项目完成了**产品级与智能化的全方位演进升级**：
+- 彻底剥离了复杂且容易端口冲突的 Web 后台，重构打造出**沉浸式纯原生桌面 GUI 客户端**（现已升级为**左侧垂直深色导航侧边栏 + 右侧功能面板**的现代布局）；
+- 打造完整的 **AI Agent 智能决策管道 (Agent Pipeline)** 与 **会话级多轮上下文记忆**；
+- 研发**本地私有 RAG 知识库系统**，支持个人或企业专业文档切片与实时向量检索；
+- 引入**双模态语音转写架构**，深度集成 `faster-whisper` 离线推理模型，并创新实现了**模型缺失自动唤起系统浏览器极速下载**的引导机制；
+- 融合**多模态视觉大模型 (Vision Model)** 与 Windows 原生 **WinRT OCR** 自动降级提取，赋予机器人全维度的图文音综合理解能力。
 
-## ✨ Features
+---
 
-| Capability | Status | How |
-|---|---|---|
-| Read messages | ✅ verified | Local SQLCipher 4 DB decryption (`wechatauto/db.py`) |
-| Real-time message listening | ✅ verified | `Listener` incremental polling, per-chat worker threads |
-| Emoji message capture | ✅ verified | Screen capture + direction-aware bubble auto-cropping |
-| Full history export | ✅ verified | JSON / SQLite |
-| Media download (image / voice / file) | ✅ verified | `MediaDownloader`: image v2 AES decryption, SILK voice, files |
-| Download original image (not thumbnail) | ✅ verified | `MediaDownloader.download_image_original()`: UI click triggers download |
-| Moments (朋友圈) read | ✅ verified | Direct `sns.db` reads (3382 feeds verified) |
-| Multi-account | ✅ verified | `list_accounts()` + `account=` |
-| Send text / file / image / reply / @member | ✅ verified | UIA-first, coordinate + OCR fallback |
-| Voice call / Poke (拍一拍) | ✅ verified | UIA buttons + OCR menus |
-| UIAutomation tree | ✅ after hot-activation | Writes the Qt accessibility gate inside Weixin.dll |
+## ✨ 核心功能全览
 
-## 🚀 Quick Start
+### 1. 🎛️ 现代原生桌面 GUI 客户端 (竖向排列布局)
+- **左侧深色垂直功能侧边栏**：告别顶部横向标签容易出现的文字截断与挤压问题，支持选中高亮微动效与鼠标悬浮响应，直观高效；
+- **6 大核心功能面板**：
+  1. 📊 **运行看板与实时日志**：今日接收、自动回复、规则过滤三大指标卡，透明输出所有收信与 AI 思考决策的彩色日志流；
+  2. 👥 **回复对象与群管配置**：联系人/群聊白名单精准勾选、公众号免打扰自动过滤、群管理员授权与 `@用户 踢` 自动踢人拉黑联动；
+  3. 🧠 **大模型接口配置**：兼容 DeepSeek、OpenAI、通义千问、Claude、硅基流动等所有兼容 OpenAI 规范的 API，支持一键拉取可用模型与连通性测试，内置客服/专家/生活助理等多套真人感 Prompt 预设；
+  4. 📚 **本地私有知识库 (RAG)**：支持原生文件夹选择，快速解析 `.txt`、`.md`、`.pdf`、`.docx`、`.csv`，构建本地切片索引并提供即时检索测试；
+  5. 🎙️ **多模态与媒体设置**：语音转写引擎切换（离线 faster-whisper / 在线云端 ASR）、本地模型规格选择、**缺失模型自动唤起浏览器极速镜像下载**；图片多模态视觉解析与 WinRT OCR 离线纯文字提取；
+  6. 🧪 **交互测试沙盒**：无需打扰真实微信好友，在沙盒中一键模拟输入文本、测试 RAG 检索命中、工具调用与最终回复效果。
 
-> 📖 **Full usage guide**: [GUIDE.md](GUIDE.md) (中英对照 / bilingual)
+### 2. 🤖 智能对话与群聊自动化
+- **独立上下文多轮记忆**：每个好友、每个群聊均维持独立的对话历史滑动窗口，对话连贯自然，富有“真人感”；
+- **群聊管理员与群管指令**：
+  - 支持设置群管理者白名单；
+  - 群管理员在群内发送 `@违规用户 踢` 时，智能体自动识别指令，通过微信底层面板自动定位该用户并将其**移出群聊并加入黑名单**；
+- **私有知识优先回复**：收到消息后优先在本地 RAG 知识库中进行语义检索，若命中相关度高的切片则依据知识库准确回答，无匹配时由大模型自然发挥；
+- **自动防风控与人性化延时**：模拟真人打字间隔与思考延迟，支持微信 4.x 后台静默监控，无需前台抢占鼠标键盘。
+
+### 3. 🎙️ 语音与多模态图片识别
+- **微信语音自动提取与转写**：
+  - 自动拦截接收到的微信语音消息（底层提取加密 SILK 音频并转为标准 WAV）；
+  - 接入本地 `faster-whisper` 模型执行离线推理（支持 GPU CUDA 加速与 CPU 全兼容免显卡运行），转写文字后送入智能体决策；
+  - **缺失模型自动调用浏览器**：若本地缺少所选模型（如 `small`、`large-v3` 等），点击测试时**自动唤起本地默认浏览器**直达该模型的极速镜像下载页面，并给出存放指引；
+  - 同时支持标准在线云端 Whisper API 作为备用；
+- **图片多模态与 OCR 提取**：
+  - 自动解密落地微信图片数据包；
+  - 主流优先调用视觉大模型（如 `qwen-vl-max`, `gpt-4o` 等）理解图意；
+  - 支持自动降级：当大模型为纯文字或解析失败时，秒速启用 Windows 原生 **WinRT OCR** 进行硬件加速纯文本提取。
+
+---
+
+## 🖥️ 软件界面预览
+
+### 🎙️ 多模态与媒体设置面板 (展示竖向侧边栏与模型下载指引)
+![竖向侧边栏与媒体配置面板](docs/vertical_gui_preview.png)
+
+---
+
+## 🛠️ 环境要求与安装配置
+
+### 1. 运行环境要求
+| 项目 | 要求 | 说明 |
+| :--- | :--- | :--- |
+| **操作系统** | Windows 10 / Windows 11 (64位) | 推荐 Windows 10 20H2 或更高版本 / Win 11 |
+| **微信版本** | 微信 4.x Windows 客户端 (`Weixin.exe`) | 实测支持 4.1.12 及以上最新版微信 |
+| **登录状态** | 微信必须**已登录**并保持运行 | 本地数据库解密密钥存于进程内存中，请勿锁屏 |
+| **Python** | 3.9 ~ 3.12 | 项目已自带完整便携式环境，亦可使用本地环境 |
+
+---
+
+### 2. 极速启动方法 (开箱即用 · 推荐)
+
+本项目已贴心地在 `wechatauto-replica\runtime` 中内置了预配齐核心依赖的绿色 Python 运行时环境：
+
+1. **克隆或下载本项目源码**：
+   ```bash
+   git clone https://github.com/fj9876/wechat-auto.git
+   cd wechat-auto\wechatauto-replica
+   ```
+2. **一键启动客户端**：
+   直接双击运行目录下的：
+   👉 **`run_ui.bat`**
+   系统将自动完成环境就绪检查并打开原生桌面 GUI 窗口！
+
+---
+
+### 3. 使用自建 Python 虚拟环境运行 (开发者方式)
+
+如果您希望在自己的 Python 虚拟环境中运行：
 
 ```bash
-pip install -e .
-# extra deps for the OCR sending path:
-pip install winsdk pypinyin
+# 1. 切换到核心目录
+cd wechatauto-replica
+
+# 2. 创建并激活虚拟环境 (建议 Python 3.10 ~ 3.12)
+python -m venv venv
+venv\Scripts\activate
+
+# 3. 安装项目基础依赖
+pip install -r requirements.txt
+
+# 4. 安装额外 OCR 与语音核心库 (确保 Windows 原生 WinRT 与分词器就绪)
+pip install winsdk faster-whisper tokenizers
+
+# 5. 启动 GUI 客户端
+python gui_app.py
 ```
 
-### Read messages
+---
 
-```python
-from wechatauto import WeChatDB
+## 🚀 核心使用步骤指南
 
-db = WeChatDB()  # auto-detects account & data dir (WeChat must be logged in)
-
-info = db.get_self_info()                    # current account
-for s in db.get_sessions(limit=10):          # session list
-    print(db.get_nickname(s["username"]), s["unread"])
-
-hits = db.search_contact("Ayi")              # search contacts
-for m in db.get_messages("filehelper", limit=10):   # recent messages
-    print(m["create_time"], m["sender_id"], m["type"], m["content"])
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 启动并登录微信 4.x ──> 2. 运行 run_ui.bat ──> 3. 配置大模型 API  │
+│                                                             │
+│ 4. 勾选回复白名单 ──> 5. 配置知识库/语音 ──> 6. 点击【开启自动回复】 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Send a message
+### 第一步：配置大语言模型 (Tab: 🧠 大模型配置)
+1. 点击左侧竖向导航【🧠 大模型配置】；
+2. 填写您的 API 基础地址（如 DeepSeek 官方 `https://api.deepseek.com/v1`、硅基流动 `https://api.siliconflow.cn/v1` 或 OpenAI 地址）；
+3. 填入对应的 `API Key`；
+4. 点击【🔍 一键拉取上游可用模型】或直接在下拉框选择所需模型（如 `deepseek-chat`、`gpt-4o-mini`、`qwen-plus` 等）；
+5. 点击【⚡ 测试 API 连通性】，确认弹出成功提示后点击【💾 保存大模型配置】。
 
-```python
-from wechatauto.guia import quick_send, quick_send_file
+### 第二步：配置回复对象白名单 (Tab: 👥 回复对象配置)
+1. 点击左侧【👥 回复对象配置】；
+2. 客户端会自动从本地微信数据库读取联系人与群聊列表（自动过滤公众号与服务号）；
+3. 在左侧勾选需要开启 AI 自动回复的好友或群聊；
+4. 如需启用群管指令，在右侧填入「群管理员微信昵称」，即可在群内使用 `@成员 踢` 执行智能踢人。
 
-quick_send("Hello", "filehelper", verify=True)   # verify=True reads back from DB
-quick_send_file(r"D:\report.pdf", "filehelper")
+### 第三步：配置本地 RAG 知识库 (可选 · Tab: 📚 本地知识库)
+1. 点击左侧【📚 本地知识库 (RAG)】；
+2. 勾选「启用本地知识库检索」；
+3. 点击【📂 选择本地文件夹】，选取存放产品资料、问答手册的目录；
+4. 点击【🔄 立即构建/重置知识库索引】，等待切片构建完成；
+5. 可在下方输入测试问题检验检索命中效果，最后点击【💾 保存知识库配置】。
+
+### 第四步：配置多模态与语音 ASR (可选 · Tab: 🎙️ 多模态与媒体设置)
+1. 点击左侧【🎙️ 多模态与媒体设置】；
+2. **语音识别**：
+   - 勾选「启用微信语音识别」；
+   - 推荐选用 `local (本地 faster-whisper)` 引擎，模型规格推荐 `base` (145MB) 或 `medium` (1.5GB)；
+   - **模型缺失自动下载**：若所选模型在本地尚未下载，点击【⚡ 开始测试转写】或右侧按钮，**将自动在浏览器中打开极速镜像下载地址**；下载所需权重（如 `model.bin`, `config.json` 等）放入 `models/whisper-{规格}` 目录后重新点击测试即可离线极速运行！
+3. **图片理解**：
+   - 勾选「启用微信图片识别与分析」；
+   - 推荐使用 `auto` 策略，多模态大模型优先，纯文本模型自动平滑降级为 Windows 原生硬件加速 WinRT OCR 离线提取；
+4. 点击右上方【💾 保存多模态设置】。
+
+### 第五步：开启全自动回复 (Tab: 📊 运行看板与实时日志)
+- 回到【📊 运行看板与实时日志】面板，点击右上角绿色的 **【▶ 开启自动回复】** 按钮；
+- 状态栏将变为绿色就绪状态，当白名单好友或群聊发送消息、语音或图片时，右侧控制台将实时输出思考轨迹与回复记录！
+
+---
+
+## 📁 项目目录结构说明
+
+```
+wechat-auto/
+├── README.md                      # 本项目统一中文官方说明文档
+├── docs/                          # 项目静态文档与截图资源
+│   └── vertical_gui_preview.png   # 现代竖向桌面客户端界面截图
+├── .gitignore                     # Git 忽略规则 (过滤模型大文件、私有配置与运行时缓存)
+└── wechatauto-replica/            # 核心应用程序工程
+    ├── run_ui.bat                 # 【推荐】一键启动 GUI 桌面客户端批处理脚本
+    ├── setup_env.bat              # 便携环境安装与依赖配置脚本
+    ├── gui_app.py                 # 原生桌面客户端完整实现 (含竖向导航侧边栏、各功能面板)
+    ├── config.json                # 全局应用配置持久化文件 (运行中由 GUI 自动保存)
+    ├── requirements.txt           # 核心依赖清单
+    │
+    ├── agent_core/                # 智能体核心架构模块
+    │   ├── config.py              # 配置数据模型 (Pydantic 验证)
+    │   ├── llm_client.py          # 大语言模型客户端与连通性检测
+    │   ├── media_engine.py        # 语音转写 (faster-whisper) 与图片视觉/WinRT OCR 处理引擎
+    │   ├── pipeline.py            # 对话上下文管理与 Agent 思考执行管道
+    │   ├── rag_engine.py          # 本地文档解析与 RAG 向量切片检索系统
+    │   ├── tools.py               # 群管踢人、群公告、群成员检测等工具执行器
+    │   └── wechat_bridge.py       # 微信底层消息监听与发信桥接层
+    │
+    ├── models/                    # 本地 Whisper 离线语音模型存放目录 (Git 忽略大文件)
+    │   ├── whisper-base/          # whisper-base 模型文件 (model.bin, config.json 等)
+    │   └── whisper-medium/        # whisper-medium 模型文件 (可选)
+    │
+    ├── runtime/                   # 内置绿色免安装 Python 运行时环境 (预置全套依赖)
+    └── wechatauto/                # 微信 4.x 底层自动化核心库 (DB解密、UIA驱动、発信引擎)
 ```
 
-### Real-time listening
+---
 
-```python
-from wechatauto import WeChatDB
-from wechatauto.db import Listener
+## ❓ 常见问题与排错指引 (FAQ)
 
-db = WeChatDB()
-lst = Listener(db, interval=1.0)
-lst.add_listener("filehelper", lambda msg, lst: print("new:", msg["content"]))
-lst.start()
-# ... your code ...
-lst.stop()
-```
+### Q1: 提示“未检测到运行中的微信进程”或“正在检测微信状态”？
+- **检查项**：请确认您的电脑已登录官方微信桌面客户端（任务管理器中进程名为 `Weixin.exe`，版本需为 4.x）；
+- **注意**：微信请保持在后台运行或常规窗口，请勿锁定 Windows 屏幕。
 
-Callbacks run on dedicated per-chat worker threads: messages in one chat are processed in order, different chats in parallel; slow callbacks (AI calls, image recognition) never block the poller.
+### Q2: 语音识别提示缺少模型，如何下载？
+- 软件具备**缺失模型全自动联动**功能：
+  1. 在【🎙️ 多模态与媒体设置】中选择对应模型规格后，直接点击下方【⚡ 开始测试转写】或【🌐 打开模型极速下载网页】；
+  2. 软件将自动为您在本地默认浏览器中打开对应模型的国内极速镜像下载网页（来自 `hf-mirror.com`）；
+  3. 您只需在网页中下载主要权重文件（`model.bin`、`config.json`、`vocabulary.json`、`tokenizer.json`）；
+  4. 将文件放置于项目 `models/whisper-{模型规格}` 文件夹内；
+  5. 重新点击测试转写即可秒速离线识别。
 
-### Media & Moments
+### Q3: 为什么群聊踢人指令 `@用户 踢` 没有反应？
+- 请确保当前运行此机器人的微信号是该群的**群主或群管理员**（普通成员无微信踢人权限）；
+- 请在【👥 回复对象配置】面板的右侧，正确配置了「群管理员微信昵称」（发送踢人指令的用户昵称需完全一致）。
 
-```python
-from wechatauto import WeChatDB, MediaDownloader, MomentDB
+### Q4: 提示 `No module named 'tokenizers'` 或 `faster_whisper` 报错？
+- 本项目内置的 `runtime` 环境已完整补全 `tokenizers` 与 `faster_whisper`；
+- 如果您是自定义本地 Python 环境，只需执行命令：`pip install tokenizers faster-whisper` 即可。
 
-db = WeChatDB()
-md = MediaDownloader(db)
-md.detect_image_key()          # scan process memory for the image AES key (persisted after first hit)
-for m in db.get_messages("filehelper", limit=50):
-    out = md.download_media("filehelper", m["local_id"])
-    if out:
-        print("downloaded:", out)
+---
 
-moments = MomentDB(db)
-for feed in moments.get_moments(limit=10):
-    print(feed["nickname"], feed["text"])
-    print("  images:", [i["md5"] for i in feed["images"]])
-    print("  likes:", [l["nickname"] for l in feed["likes"]])
-    print("  comments:", [(c["nickname"], c["content"]) for c in feed["comments"]])
-    # download this feed's pictures & videos (local cache first, then CDN url)
-    saved = moments.download_moment_media(feed, save_dir=r"D:\moments")
-    print("  saved:", saved)
-```
+## ⚖️ 免责声明与开源许可
 
-See `wechatauto/demo_moments_download.py` for a runnable download demo
-(`python -m wechatauto.demo_moments_download [N] --out 目录`).
-
-**Like & comment (UIA controls)** — Moments like/comment are server-side
-actions done through the client UI, so they use the UIA-tree route (not the
-local DB). `WeChat` hot-activates the `mmui` UIA tree and clicks the
-朋友圈 nav button, then likes/comments a feed via its UIA controls:
-
-```python
-from wechatauto import WeChat
-
-wx = WeChat()
-moments = wx.Moment            # None if the UIA tree is unavailable
-if moments is None:
-    raise SystemExit("UIA tree unavailable — can't like/comment")
-wx.SwitchToMoments()           # click 朋友圈 in the nav bar
-items = moments.GetMoments()   # list feed items as UIA controls
-first = items[0]
-moments.Like(first)                            # thumb up
-moments.Like(first, cancel=True)               # undo
-moments.Comment(first, "Nice!")                # comment
-moments.Comment(first, "Thanks!", reply_to="张三")  # reply to a comment
-```
-
-Runnable demo: `python -m wechatauto.demo_moments_interact [--like N | --unlike N | --comment N 文字]`
-(plain run lists the latest feeds without touching the UI).
-
-> **⚠️ Comment/reply automation is experimental — testing only.** The
-> reply-to-a-comment feature (`ReplyComment`) locates the comment row on screen
-> via OCR (WeChat's comment area is self-drawn) and then drives the UI to
-> click / paste / send. Layout varies across versions and it is not
-> production-grade — use it only on a test account to validate the pipeline.
-
-## 🧠 How It Works
-
-- **Reading** — WeChat 4.x stores everything in SQLCipher 4 encrypted SQLite databases under `xwechat_files/<wxid>/db_storage/` (`contact.db`, `message_*.db`, `media_0.db`, `sns.db`, …). Each DB has its own 32-byte key living in the Weixin.exe process memory (`com.Tencent.WCDB.Config.Cipher` config objects). The library locates them with a **read-only memory scan**, validates candidates with SQLCipher HMAC rules, decrypts pages to a temp dir and caches the result (first decrypt ~6s, then instant). WAL incremental merging with frame-salt filtering prevents `database disk image is malformed` corruption.
-- **Sending** — WeChat 4.x chat UI is self-drawn (no accessibility nodes), so sending uses a hybrid driver: hot-activate the **Qt accessibility gate** inside Weixin.dll (RVA scan, writes the screen-reader flag) to materialize the `mmui::*` UIA tree — search box, `chat_input_field`, etc. Sending is **UIA-first, coordinate + OCR fallback**: auto-calibrating layout (`~/.wechatauto/layout-<machine>.json`), zoomed OCR (3x) with multi-round voting for rare Chinese characters, clipboard + Ctrl+V input to dodge IME interception.
-- **Media** — image `.dat` files are `[6B sig][4B aes_size][4B xor_size] + AES-ECB + plaintext + xor` chunks. The account-level AES key is transient (only resident in memory while viewing an image); `MediaDownloader` scans for it, validates via JPEG/PNG magic, and **persists it to `image_keys.json`** so later runs need no scanning (or pass `image_key=` explicitly). Voice is plain SILK read from `media_0.db`; files are read from `msg/file/` with original names resolved from `message_resource.db`.
-
-## ⚖️ vs wxauto
-
-| | wxauto | wechatauto-replica |
-|---|---|---|
-| WeChat 4.x | ❌ UIA tree gone → broken | ✅ DB decryption + UIA hot-activation |
-| Message reading | via UI tree | via local DB (full history, faster) |
-| Sending | UIA clicks | UIA-first + OCR fallback |
-| Media | limited | image AES decrypt, SILK voice, files |
-| Moments | read + like/comment (UIA) | read + like/comment (UIA), full history via DB |
-
-## ⚠️ Known Limitations
-
-1. **WeChat must be logged in** — DB keys live in process memory; cached after first extraction, re-extracted automatically after re-login.
-2. **Image AES key is transient** — only resident while viewing an image; persisted to `image_keys.json` once found, or inject via `image_key=`.
-3. **Sending is a GUI operation** — fails cleanly when the window is locked/unresponsive (operations return a clear failure).
-4. **Videos** are downloadable only when the mp4 already exists on disk (`msg/video/`).
-5. **Group-chat image originals** are stored locally only after being opened (viewed) in WeChat; until then only the thumbnail (`_t.dat`) exists — `download_image` falls back to the thumbnail (marked `_thumb` in the filename). Use `download_image_original()` to trigger WeChat to fetch the original via a UI click on the image message.
-6. **Moments likes/comments** go through the UI (server-side actions) and need the hot-activated `mmui` UIA tree plus an unlocked desktop; they fail cleanly when the tree is unavailable. **Moments posting stays dropped** (4.x self-drawn UI, unreliable).
-7. **Quote-message sending (BETA)** goes through a coordinate + OCR + `SendInput` pipeline that depends on WeChat 4.1.x self-drawn layout; positioning may drift with window size / DPI / chat content — test flow on a throwaway account only.
-
-## 🗺️ Roadmap
-
-- Calibrate and verify file/image/reply/@ sending on unlocked desktops
-- Video message download (4.x storage location TBD)
-- Performance: parallel export / first-scan, incremental memory-scan cache
-
-## 📝 Changelog
-
-### v1.2.2.2 (2026-09-13)
-
-- **Key handling hardened: no more recurring failure after every WeChat update.** Three layers:
-  - **The cache can no longer be wiped**: `_save_keys()` never persists an empty result (atomic write + `.bak` kept). Previously a transient extraction failure (wrong account / permission) **overwrote a good cache with an empty file**, so every later start reported "0 keys" — that is exactly the `keys cached: 0` seen in the field.
-  - **Durable key copy**: a copy is kept at `%LOCALAPPDATA%\wechatauto_keys\<account>.json` (override the directory with the `WECHATAUTO_KEYS_DIR` env var, e.g. your project workspace), surviving TEMP cleanup and WeChat updates. On startup the caches are **merged from several locations** (durable copy → work cache → `.bak` → other accounts' caches) and every entry is verified against page-1 HMAC, keeping only working keys.
-  - **Account selection is now decided by key verification**, not by "most recently modified .db" (a WeChat update rewrites every .db, shifting mtimes and picking the wrong account → 0 keys). One memory scan now collects candidate key material and scores **every account directory** by page-1 HMAC, switching to the one that unlocks (log: `已按密钥校验选定账号目录: …`).
-- **cfg master-key warning**: on WeChat 4.1.13+ the cfg path returns an **untrustworthy master key** (demoted to a fallback since v1.1.9); it now logs an explicit warning when it cannot reproduce any database key instead of silently succeeding.
-- **Better diagnostics (`diagnose_keys`)**: now prints the WeChat client **FileVersion**, per-account "cache / derived" availability and a **master-key consistency check** (which tells you which account the keys belong to); the `_open` error text now lists the three classic causes (32-bit Python / permission mismatch / wrong account among several) plus the `account=` hint.
-
-### v1.2.2.1 (2026-09-12)
-
-- **Compatibility with the new WeChat UI (verified on 4.1.13.65)**: the new build changed `AutomationId` from short names into **dotted paths** (old `session_list` / `chat_input_field` → new `MainView.main_tabbar`, `MainView….main_window_sub_splitter_view…`), which broke exact-equality matching. AutomationIds are now matched as exact / dotted-segment / suffix (`_aid_hit()`), so both the old short names and the new paths resolve.
-- **Relaxed window-title matching**: the new main window title is `Weixin`, and becomes `微信(3)` when there are unread counts; `_title_is_main()` now matches by containment and still rejects unrelated titles such as `WeChat`.
-- **Anchor candidate lists + structural fallbacks**: the main window / login window / search box now match against candidate tuples (single-value constants kept for backward compatibility); the search box, chat input and search-result list each gained a structural fallback (an EditControl whose Name contains 搜索, an EditControl inside the chat area, attribute-based search from the root), so a renamed class or AID in a future build no longer breaks the whole path.
-- **New layout self-check `WeChatUIA.describe_layout()`**: one call returns the main class name, window title, layout kind (`merged` / `legacy` / `chat`) and the resolution result of every anchor (main_window, search_box, session_list, chat_input, main_tabbar, sns_list). Run it first when a new WeChat build changes the UI.
-- Note: the Moments anchors were already dual-layout (standalone `mmui::SNSWindow` / merged `mmui::SNSContentView`); 4.1.13.65 keeps those class names, so no change was needed there.
-
-### v1.2.2 (2026-09-12)
-
-- **Fix cross-shard message reads (missing messages / voice)**: a conversation's `Msg_<md5>` table actually spans several `message_*.db` shards, but `get_messages` only hit the first one — e.g. a chat with 8,904 real messages (24 voice notes) reported just 1. New `_find_msg_tables()` / `_msg_conns()` / `_shard_rows()` merge reads across all shards and sort by `sort_seq`; `get_messages`, `get_new_messages` and `_find_media_rows` now use the merged view. `get_message_row` gained a `local_type` filter (a `local_id` is **not** unique across shards) and new `get_message_rows_for_media()` returns every shard row; media downloaders pass their type code so the right shard row is selected.
-- **Reliable listener delivery (behavior change)**: the watermark now advances **only after callbacks succeed** (a new `_inflight` boundary prevents re-dispatching unconfirmed messages), callbacks are retried (`max_retries`, default 3) before being logged as dropped, and the watermark is persisted to `listener_watermark.json`. Messages that arrive while your process is down are delivered on the next start instead of being skipped. Pass `watermark_file=""` to disable persistence.
-- **Text restore no longer requires CJK**: pure English / digits / URLs / emoji container-format messages are decoded instead of degrading to `[文本]`.
-- **`Chat.GetNewMessage()` no longer drops backlog**: batches are pulled until caught up (>200 messages) and the watermark only moves to the last message actually returned, instead of jumping to the newest DB position.
-- **UIA materialization self-heal (no child controls after a WeChat restart/upgrade)**: after a WeChat restart or upgrade the Qt accessibility gate byte resets to 0 and the `mmui::` tree degrades to an empty Qt shell (`Qt51514QWindowIcon` + 2 nodes). The driver now hot-writes the gate, **verifies that `mmui::` controls actually materialized**, and retries other candidate RVAs on failure (the RVA that worked is cached per DLL identity). `_get_uia()` self-heals on a 30s throttle — no more "one failed wake and OCR forever", and no manual `refresh=True`. Fallback table gained `4.1.13.65 → 0x0AE2B0C8`.
-- **Moments scroll-positioning fixes**: bounded reversals (at most one per run, then downward-only) and stall detection (the top-cell fingerprint now includes geometry — merged-layout ListItems can share the same Name, which previously looked like a stall and aborted mid-scroll); skip "scroll to top" when the DB ruler says the target is below; the stop criterion is now **"the next moment's UIA control appeared"**; direction/distance fixes (clipped pixels → wheel notches) plus a bottom margin so the "…" button is reachable.
-- **Message type table**: 4.x composite `local_type` is decomposed by its low 32 bits; added `50 音视频通话` (VoIP bubble), `11000 动画表情`, `8594229559345 红包` (the library previously mislabeled it as an appmsg/file card via the low-byte mapping); empty bodies (stickers) now show `[动画表情]` instead of a blank line; `demo_group_messages` decodes zstd for every type and prints one-line summaries.
-- **`demo_listen.py --all`** now auto-discovers new sessions (previously limited to the 30 most recent at startup).
-- **New anti-recall listener `RecallGuard` (BETA)**: after `watch(listener)` every new message is mirrored into a local sqlite DB and attachments (image/voice/video/file) are backed up to `media/`; on a `revokemsg` it prints `[撤回] <revoker> → <original text>` and records it in `recall_events`. **Not fully field-tested — shipped as BETA.**
-- **New `MomentObserver` (BETA)**: observe-and-freeze snapshots of Moments cache keys via `snapshot()` / `diff()` (cache keys have no derivable mapping to feed md5 and the cache is evictable, so observing is the only way to keep them). **Not fully field-tested — shipped as BETA.**
-
-### v1.2.1 (2026-09-06)
-
-- **New "quote & send" message feature (BETA)**: `WeChatGUI.quote_msg(text, who, target_text=None, verify=False)` right-clicks the target message → picks「引用」from the popup menu → types the content → sends; omitting `target_text` quotes the most recent message. `quick_quote()` is a one-liner entry point, demo script `wechatauto/demo_quote.py`.
-  - **BETA disclaimer**: the feature uses a coordinate + OCR + `SendInput` pipeline that depends on WeChat 4.1.x self-drawn layout; positioning may drift with window size / DPI / chat content. The right-click uses `SendInput` injection (the render window ignores `mouse_event` right-clicks), and the cursor is first moved with `SetCursorPos` before injecting the click to avoid "moves but doesn't click / clicks but doesn't move" drift.
-- **Removed the `desktop_available()` white-pixel screen check**: control targeting is fully UIA-based now, so the full-window screenshot white-ratio sampling was dropped — it could falsely report "window not visible" while WeChat was fine. `ensure_visible()` now treats a live window handle as visible and keeps its "minimize blockers + bring-to-front" actions.
-
-### v1.2.0.1 (2026-08-31)
-
-- **Fix WAL-merged database cache corruption causing infinite loop**: `_check_merged` previously used `SELECT count(*) FROM sqlite_master` which only checks the schema tree — corrupted data pages still passed validation, causing the cache stamp to mark the bad cache as "up-to-date" and every subsequent poll to reuse it, throwing `database disk image is malformed` on a dead loop. Now uses `PRAGMA quick_check` for full database validation (data + index pages). New `_invalidate_cache()` clears all decrypted `.db`/`.stamp` files. New `_run_msg_query()` unified entry point auto-retries once on `malformed` (clear cache → rebuild → retry). `_msg_conn` now closes shard connections immediately to avoid Windows file-lock issues during cache cleanup.
-
-### v1.2.0 (2026-08-30)
-> Note: this release merges all changes made after 1.1.10.2 that were not yet published (1.1.10.3 → 1.1.10.7).
-
-- **Smart Moments positioning + auto like**: `Moment.find_moment(publisher, keyword, ...)` uses a hybrid of the **DB route (computing the target offset)** + **UIA route (scrolling by offset)** — it derives how many feeds the target is from the current view using the local `sns.db` ruler, then scrolls adaptively in the correct direction to land on the moment by author/keyword, eliminating blind downward scrolling and false "not found" results.
-- **"…" overlay recognition**: `Moment._locate_more_click` / `_find_more_button` locate the "…" button (bottom-right of a feed) via template matching (light/dark templates shipped in `assets/`) and click it; if not found it keeps nudging the scroll and retrying to pop up the like/comment overlay.
-- **One-shot Like**: `Moment.LikeMoment(publisher, keyword, ...)` does "locate → tap "…" → like in the overlay"; the "赞/Comment" buttons in the overlay are found by a global deep traversal from the UIA root (matching by name) and clicked at their center.
-- **Moments like/comment via UIA controls**: `WeChat` now exposes a `Moment` property and `SwitchToMoments()` that hot-activate the `mmui` UIA tree and click the 朋友圈 nav button. `Moment.Like(item, cancel=False)` and `Moment.Comment(item, content, reply_to=None)` operate on UIA feed items — likes/comments are server-side actions, so they need the UI (the DB route stays read-only). `WeChat.Moment` is `None` when the UIA tree is unavailable. Demo `wechatauto/demo_moments_interact.py`.
-- **Moments media download**: new `MomentDB.download_media(media, save_dir, kind)` copies a single picture/video from the local cache first (byte-for-byte, offline) and falls back to the CDN url; `MomentDB.download_moment_media(feed, save_dir, ...)` fetches all pictures/videos of one feed into a folder. `find_local_media(md5, kind, size)` locates the cache file by md5 and, for videos, by `totalSize` across the whole `Sns/Video` tree (the video cache name is a content-hash unrelated to the feed md5, so size matching recovers real MP4s). `parse_feed` now distinguishes pictures vs videos via `videomd5`/`videoDuration`/`type` and records each media's `size`. Demo `wechatauto/demo_moments_download.py`.
-- **Moments read API (DB route)**: `MomentDB.get_moments()` now supports `since` / `until` (Unix-seconds time filter) and `keyword` (text filter), plus `limit=0` to return every row. New incremental-sync helpers `latest_tid()` / `get_moments_since()` make it easy to poll for new moments. New interaction notifier `get_interactions()` / `interactions_unread_count()` read the "likes/comments on my moments" table (`SnsMessage_tmp3`). New `comment_tree()` / `comment_reply_to()` organize a feed's comments into reply chains (built from `comment_id`/`ref_comment_id`).
-- **Add group name ↔ ID lookup**: `get_groups()` now returns each group's real `name` (from `contact` table, falling back to its wxid). New `group_name_to_id(name)` (exact match first, then substring/fuzzy) and `group_id_to_name(chatroom_wxid)` let you resolve a group's wxid from its display name and vice versa — handy for combining with `get_group_members()` and `at_member()`.
-- **Add group member enumeration & change watch (read-only, no UI)**: New `WeChatDB.get_groups()` / `get_group_members(chatroom_wxid)` read `chat_room` + `chatroom_member` + `contact` from `contact.db` to return each group's members (username / nick_name / remark / is_owner). New `GroupMemberWatcher` (via `get_group_member_watcher`) snapshots membership and `poll()` diffs against the baseline to report `joined` / `left` members, enabling polling-based membership-change monitoring. Useful together with the existing UI-automation `at_member()`.
-- New runnable demos `wechatauto/demo_moment_find.py`, `demo_moment_more.py`, `demo_moment_like.py`; new deps `pyautogui`, `opencv-python`.
-
-### v1.1.10.2 (2026-08-30)
-- **Fix long text still showing `[文本]` on fresh installs: add required `zstandard` dependency**: WeChat 4.x stores long-text `message_content` as a zstd-compressed frame, decoded in `_friendly_content` via `import zstandard`. That import silently failed when `zstandard` was absent (it was **not** in `pyproject.toml` required deps), so long text degraded to the `[文本]` placeholder while listening worked normally. `zstandard` is now a required dependency; `_friendly_content` also gained lazy dual-package import (`zstandard`/`zstd`) via new `_get_zstd_module()` / `_zstd_decompress()` helpers.
-
-### v1.1.10.1 (2026-08-29)
-- **Fix `AttributeError: 'sqlite3.Row' object has no attribute 'get'` in message reading**: `_msg_row_to_dict` called `.get("compress_content")` on a `sqlite3.Row`, which only supports `[]` access. Messages whose content stays a placeholder (e.g. emoji/special types) hit this code path and crashed the real-time `Listener` polling loop. Now uses `[]` access with a fallback, fixing `get_messages` / `get_new_messages` / `get_message_row`.
-
-### v1.1.10 (2026-08-27)
-- **Add original image download via UI automation**: New `MediaDownloader.download_image_original()` method triggers WeChat to download original images by simulating UI clicks on image messages. This solves the limitation where group chat images only have thumbnails available.
-- **Fix long text message content extraction**: Added zstd decompression support, `compress_content` fallback, and fixed newline character handling.
-
-### v1.1.9 (2026-08-27)
-- **Fix key extraction for WeChat 4.1.13+**: Prioritized `Config.Cipher` memory scan over `extract_master_key_from_cfg` for key extraction. The cfg-based extraction returns incorrect master keys on WeChat 4.1.13.12, while the Config.Cipher scan (which reads raw `enc_key` values from XOR-decoded blobs) works correctly. This fixes the "0/24 keys verified" issue reported on newer WeChat versions.
-
-### v1.1.8 (2026-08-25)
-- **Fix missing `_derive_xor_key` method in MediaDownloader**: v1.1.7 release accidentally omitted the `_derive_xor_key()` method while code paths (`_decrypt_v2`, `detect_image_key`) still referenced it, causing `AttributeError` when decrypting images. Restored the method for XOR key derivation from thumbnail `_t.dat` / `_h.dat` files.
-- **Fix group-chat `sender_id` → `sender_username` resolution**: `Listener` callbacks now receive `sender_username` (wxid format) in the message dict, resolved from `message_resource.SenderName2Id` mapping. Previously, `sender_id` was a numeric ID that could not be used directly with `search_contact()`.
-- **Thanks [uiharukazari0105](https://github.com/uiharukazari0105)** for reporting the missing _derive_xor_key issue in v1.1.7.
-
-### v1.1.6.1 (2026-08-20)
-- **PyPI description fix**: v1.1.6 was uploaded without the synced `README_pypi.md` (description still showed 1.1.5.1); this patch restores the full v1.1.6 changelog and bumps the version marker.
-
-### v1.1.6 (2026-08-20)
-- **Auto-diagnosis on missing key**: `数据库无可用密钥` now runs a built-in check before raising — Python bitness (32-bit can't read 64-bit Weixin memory), per-PID `OpenProcess`/`ReadProcessMemory` permission, and multi-account mismatch (all `wxid_*` dirs vs. picked account, suggesting `WeChatDB(account=...)`). No need to run `diagnose_keys` first.
-- **New diagnostic tool**: `wechatauto/diagnose_keys.py` (`python -m wechatauto.diagnose_keys`, WeChat logged in) dumps lib version, Python bitness, Weixin PIDs with per-process read-permission checks, all accounts vs. picked account, cached keys, fresh in-memory extraction, and key verification — paste the output when reporting key-extraction failures.
-- **Skip `migrate\unspportmsg.db`**: WeChat's reserved "unsupported message" DB has no in-memory key and is never queried; it was forcing a full process-memory scan on every init.
-
-### v1.1.5.1 (2026-08-18) — beta
-- **Fix real-time listening**: `WeChatDB.get_new_messages()` referenced an undefined `found` (NameError swallowed by `Listener._poll_once`), so **no** message callbacks ever fired — including first messages from contacts you had never chatted with.
-- **Dynamic message shards**: `_message_dbs()` now re-scans the disk so shards WeChat creates at runtime (e.g. `message_5.db`) are picked up and their keys extracted automatically.
-
-### v1.1.5 (2026-08-18)
-- **Version cleanup**: normalized the patch version (1.1.4.2 → 1.1.5) after the `media_*.db` voice fix.
-
-### v1.1.4.2 (2026-08-18)
-- **PyPI description cleanup**: removed the demo default-group changelog line from the PyPI description.
-
-### v1.1.4.1 (2026-08-18)
-- **PyPI readme bilingual**: merged the Chinese (`README.zh-CN.md`) and English (`README.md`) into one PyPI description so the Chinese version is visible on the package page.
-
-### v1.1.4 (2026-08-18)
-- **Voice download across all media databases**: `download_voice()` now searches every `media_*.db` (not just `media_0.db`) — WeChat shards voice data across multiple media DBs; previously voices stored in `media_1.db` etc. could not be found (thanks uiharukazari0105).
-- **`demo_media.py --images N`**: download the latest N images of a chat directly from the DB (by local_type), bypassing the total-message `--limit` — no more "only a few images listed" when a group has thousands of messages.
-- **`WeChatDB._find_media_rows(user, types)`**: new helper returning all media local_ids of a chat for a set of local_types (batch download).
-- **Group-chat image thumbnail fallback**: original images in group chats are only downloaded after being opened in WeChat; `download_image` now falls back to the thumbnail (`_t.dat`) when the original is missing, saving it with a `_thumb` suffix.
-
-### v1.1.3 (2026-08-17)
-
-### v1.1.2 (2026-08-16)
-- **UIA driver thread-safety**: `WeChatUIA` now initializes COM on the current thread (`CoInitializeEx`, idempotent) — fixes crashes when instantiated from background threads / host apps (e.g. WeChatBot) with "CoInitialize not called / cannot load UIAutomationCore.dll" errors.
-- **Main-window filtering**: only windows whose process loaded `Weixin.dll` are considered — auxiliary processes without the DLL (whose hot-activation always fails) no longer produce noise warnings.
-- **Forward-voice fix**: `Chat.ForwardVoiceMessage` uses `self` when no target is given (the previous `_cur()` could resolve the wrong chat).
-- **Re-entrant UI lock**: `LockManager` is now re-entrant per thread — `@uilock` functions calling each other (e.g. `ForwardVoiceMessage` → `VoiceMessage.forward_to`) no longer deadlock.
-
-### v1.1.1 (2026-08-16)
-- **Recall last message** (`Chat.RecallLastMessage` / `uia_driver.recall_last_message`): right-click the latest own message → UIA-first menu-item click (`mmui::XMenuView` found inside the main-window subtree), OCR fallback; fails cleanly when the 2-minute recall window has passed (menu only shows "Delete").
-- UIA robustness: menu-item lookup scoped to the main-window subtree (avoids the Windows UIA root-traversal hang), removed the fragile `WindowControl(ClassName=...)` fallback.
-- Media fix: video id bytes→str decoding in `MediaDownloader`.
-- `demo_media.py --photos` default 3 → 10.
-
-### v1.1.0 (2026-08-15)
-- **Image AES key auto-capture** (`media.py`): the V2 image key is only resident in memory while viewing an image (~5 min). `_scan_aes_key()` gained a `monitor` mode — polls continuously and persists the key to `image_keys.json` once found; users just open one image to finish setup.
-- Fixed the process-ordering scan bug (removed the memory-usage sort that pushed the main process last).
-- **Forward voice messages**: SILK extraction from `media_0.db` + file-message send (`demo_forward_voice.py`).
-- New demos: `demo_group_messages.py` (group + red-packet ZSTD parsing), `demo_robust.py`.
-
-## 🤝 Acknowledgments
-
-Thanks to [vesio](https://github.com/vesio) for sharing the WeChat 4.1.12 UIA control-tree approach and debugging ideas in [issue #1](https://github.com/fanyuantaier/wechatauto-replica/issues/1) — it made the UIA hybrid driver (v1.0.8) possible.
-
-Thanks to [nanshanjack](https://github.com/nanshanjack) for finding the UI-lock re-entrancy problem (fixed in v1.1.2).
-
-Thanks to [maozhitao12450](https://github.com/maozhitao12450) for reporting the WXAM (wxgf) image download issue (fixed in v1.1.3).
-
-Thanks to [uiharukazari0105](https://github.com/uiharukazari0105) for finding that voice data stored in `media_1.db` (and later) was never searched (fixed in v1.1.4).
-
-## 📄 License & Disclaimer
-
-Apache-2.0. This project is for personal learning and automation research only — please respect the WeChat software license agreement and applicable laws.
-
-Contact: fanyuantaier@163.com
+1. **用途限制**：本项目仅供个人技术研究、编程学习以及提高日常工作效率使用。请使用者在遵循《微信个人账号使用规范》及相关法律法规的前提下合理使用；
+2. **安全无侵入**：本项目未采用任何破坏微信进程安全机制的 DLL 注入手段，消息读取基于本地已授权数据库文件，驱动基于 Windows 原生无障碍可访问性接口；
+3. **开源许可**：本项目基于 [MIT License](LICENSE) 协议开源。
