@@ -241,7 +241,12 @@ class WeChatAIAgentApp:
         self.notebook.add(self.tab_rag, text=" 📚 本地知识库 (RAG) ")
         self._build_rag_tab()
 
-        # Tab 5: 在线测试沙盒
+        # Tab 5: 多模态与媒体设置
+        self.tab_media = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_media, text=" 🎙️ 多模态与媒体设置 ")
+        self._build_media_tab()
+
+        # Tab 6: 在线测试沙盒
         self.tab_sandbox = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_sandbox, text=" 🧪 交互测试沙盒 ")
         self._build_sandbox_tab()
@@ -2084,7 +2089,580 @@ class WeChatAIAgentApp:
         messagebox.showinfo("成功", "本地 RAG 知识库配置已成功保存！")
 
     # -------------------------------------------------------------------------
-    # Tab 5: 交互测试沙盒 (Sandbox)
+    # Tab 5: 多模态与媒体设置 (Multimodal & Media Settings)
+    # -------------------------------------------------------------------------
+    def _build_media_tab(self):
+        parent = self.tab_media
+
+        canvas = tk.Canvas(parent, bg=self.COLOR_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=self.COLOR_BG)
+
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw", width=1100)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind("<Enter>", lambda _: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda _: canvas.unbind_all("<MouseWheel>"))
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # 顶部操作栏
+        top_bar = tk.Frame(scroll_frame, bg=self.COLOR_BG)
+        top_bar.pack(fill="x", padx=16, pady=(12, 6))
+
+        tk.Label(
+            top_bar,
+            text="🎙️ 微信语音识别 (ASR) 与 🖼️ 多模态图片理解 (Vision/OCR) 设置",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=self.COLOR_BG,
+            fg=self.COLOR_TEXT
+        ).pack(side="left")
+
+        btn_save_top = tk.Button(
+            top_bar,
+            text="💾 保存多模态设置",
+            command=self._on_save_media_config_click,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            activebackground="#1d4ed8",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=16,
+            pady=6,
+            cursor="hand2"
+        )
+        btn_save_top.pack(side="right")
+
+        # ---------------------------------------------------------------------
+        # 卡片 1: 微信语音识别设置 (Voice ASR) 与音频测试
+        # ---------------------------------------------------------------------
+        card_voice = tk.Frame(scroll_frame, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card_voice.pack(fill="x", padx=16, pady=6)
+
+        tk.Label(card_voice, text="🎙️ 微信语音识别设置 (Voice ASR) 与测试", font=("Microsoft YaHei UI", 11, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="w", padx=16, pady=(12, 6))
+
+        # 启用开关
+        self.var_voice_enabled = tk.BooleanVar(value=getattr(self.config.voice, "enabled", True))
+        chk_voice = tk.Checkbutton(
+            card_voice,
+            text="启用微信语音识别 (收到微信语音消息时自动从底层提取 SILK 格式转写为文本并送入智能体回复)",
+            variable=self.var_voice_enabled,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=self.COLOR_PRIMARY
+        )
+        chk_voice.pack(anchor="w", padx=16, pady=4)
+
+        grid_v = tk.Frame(card_voice, bg=self.COLOR_CARD)
+        grid_v.pack(fill="x", padx=16, pady=6)
+
+        # 引擎选择
+        tk.Label(grid_v, text="语音识别引擎:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=6)
+        curr_eng = getattr(self.config.voice, "engine", "local")
+        eng_display = "local (本地 faster-whisper [离线·极速·无需API])" if curr_eng != "cloud" else "cloud (在线云端 Whisper 接口 [兼容OpenAI])"
+        self.var_voice_engine = tk.StringVar(value=eng_display)
+        self.cb_voice_engine = ttk.Combobox(
+            grid_v,
+            textvariable=self.var_voice_engine,
+            values=[
+                "local (本地 faster-whisper [离线·极速·无需API])",
+                "cloud (在线云端 Whisper 接口 [兼容OpenAI])"
+            ],
+            state="readonly",
+            width=48,
+            font=("Microsoft YaHei UI", 9)
+        )
+        self.cb_voice_engine.grid(row=0, column=1, columnspan=2, sticky="w", padx=6, pady=6)
+        self.cb_voice_engine.bind("<<ComboboxSelected>>", self._on_voice_engine_changed)
+
+        # 本地配置容器
+        self.f_voice_local = tk.Frame(card_voice, bg=self.COLOR_CARD)
+        self.f_voice_local.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(self.f_voice_local, text="本地 Whisper 模型规格:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        curr_m = getattr(self.config.voice, "whisper_model", "base") or "base"
+        model_map = {
+            "tiny": "tiny (极速 ~75MB)",
+            "base": "base (推荐 ~145MB 速度与准确平衡)",
+            "small": "small (~480MB 高精度)",
+            "medium": "medium (~1.5GB 专业级)",
+            "large-v3": "large-v3 (高显存需求)"
+        }
+        self.var_voice_model = tk.StringVar(value=model_map.get(curr_m, f"{curr_m}"))
+        self.cb_voice_model = ttk.Combobox(
+            self.f_voice_local,
+            textvariable=self.var_voice_model,
+            values=list(model_map.values()),
+            state="readonly",
+            width=36,
+            font=("Microsoft YaHei UI", 9)
+        )
+        self.cb_voice_model.grid(row=0, column=1, sticky="w", padx=6, pady=4)
+
+        tk.Label(self.f_voice_local, text="推理硬件设备:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=2, sticky="w", padx=(16, 0), pady=4)
+        curr_dev = getattr(self.config.voice, "whisper_device", "auto") or "auto"
+        dev_map = {
+            "auto": "auto (自动检测：优先CUDA，无显卡自动CPU)",
+            "cpu": "cpu (全兼容免显卡运行)",
+            "cuda": "cuda (NVIDIA 独立显卡加速)"
+        }
+        self.var_voice_device = tk.StringVar(value=dev_map.get(curr_dev, f"{curr_dev}"))
+        self.cb_voice_device = ttk.Combobox(
+            self.f_voice_local,
+            textvariable=self.var_voice_device,
+            values=list(dev_map.values()),
+            state="readonly",
+            width=36,
+            font=("Microsoft YaHei UI", 9)
+        )
+        self.cb_voice_device.grid(row=0, column=3, sticky="w", padx=6, pady=4)
+
+        # 云端配置容器
+        self.f_voice_cloud = tk.Frame(card_voice, bg=self.COLOR_CARD)
+        tk.Label(self.f_voice_cloud, text="云端 ASR API Base URL:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        self.var_voice_cloud_url = tk.StringVar(value=getattr(self.config.voice, "cloud_api_url", "https://api.openai.com/v1") or "https://api.openai.com/v1")
+        ttk.Entry(self.f_voice_cloud, textvariable=self.var_voice_cloud_url, width=42, font=("Consolas", 9)).grid(row=0, column=1, sticky="w", padx=6, pady=4)
+
+        tk.Label(self.f_voice_cloud, text="API Key:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=2, sticky="w", padx=(10, 0), pady=4)
+        self.var_voice_cloud_key = tk.StringVar(value=getattr(self.config.voice, "cloud_api_key", "") or "")
+        ttk.Entry(self.f_voice_cloud, textvariable=self.var_voice_cloud_key, width=30, show="*", font=("Consolas", 9)).grid(row=0, column=3, sticky="w", padx=6, pady=4)
+
+        tk.Label(self.f_voice_cloud, text="云端模型名称:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=4)
+        self.var_voice_cloud_model = tk.StringVar(value=getattr(self.config.voice, "cloud_model_name", "whisper-1") or "whisper-1")
+        ttk.Entry(self.f_voice_cloud, textvariable=self.var_voice_cloud_model, width=30, font=("Consolas", 9)).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+
+        if curr_eng == "cloud":
+            self.f_voice_local.pack_forget()
+            self.f_voice_cloud.pack(fill="x", padx=16, pady=4)
+
+        # 语音转写测试工具沙盒
+        lf_vtest = tk.LabelFrame(card_voice, text=" 🎵 音频文件选择与转写测试工具 ", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold"), fg="#0284c7", padx=12, pady=8)
+        lf_vtest.pack(fill="x", padx=16, pady=(10, 12))
+
+        f_vt_in = tk.Frame(lf_vtest, bg=self.COLOR_CARD)
+        f_vt_in.pack(fill="x", pady=4)
+
+        tk.Label(f_vt_in, text="测试音频文件路径:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        self.var_voice_test_path = tk.StringVar(value="")
+        ttk.Entry(f_vt_in, textvariable=self.var_voice_test_path, width=54, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
+
+        btn_browse_audio = tk.Button(
+            f_vt_in,
+            text="📂 弹窗选择音频文件",
+            command=self._on_browse_audio_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#f1f5f9",
+            fg=self.COLOR_TEXT,
+            relief="flat",
+            padx=10,
+            pady=3,
+            cursor="hand2"
+        )
+        btn_browse_audio.pack(side="left", padx=4)
+
+        self.btn_run_voice_test = tk.Button(
+            f_vt_in,
+            text="⚡ 开始测试转写",
+            command=self._on_run_audio_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=3,
+            cursor="hand2"
+        )
+        self.btn_run_voice_test.pack(side="left", padx=4)
+
+        tk.Label(lf_vtest, text="音频转写输出文本与用时反馈:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"), fg=self.COLOR_MUTED).pack(anchor="w", pady=(6, 2))
+        self.txt_voice_test_result = scrolledtext.ScrolledText(lf_vtest, wrap="word", height=4, font=("Microsoft YaHei UI", 9), bd=1, relief="solid")
+        self.txt_voice_test_result.pack(fill="x", pady=2)
+        self.txt_voice_test_result.insert("1.0", "提示：点击上方【📂 弹窗选择音频文件】选取微信 .silk、.wav、.mp3 等音频文件，再点击【⚡ 开始测试转写】即可即时测试识别效果。")
+
+        # ---------------------------------------------------------------------
+        # 卡片 2: 微信图片识别设置 (Vision & OCR) 与测试
+        # ---------------------------------------------------------------------
+        card_image = tk.Frame(scroll_frame, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card_image.pack(fill="x", padx=16, pady=6)
+
+        tk.Label(card_image, text="🖼️ 微信图片识别与分析设置 (Vision & OCR) 与测试", font=("Microsoft YaHei UI", 11, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="w", padx=16, pady=(12, 6))
+
+        # 启用开关
+        self.var_image_enabled = tk.BooleanVar(value=getattr(self.config.image, "enabled", True))
+        chk_img = tk.Checkbutton(
+            card_image,
+            text="启用微信图片识别与分析 (收到图片时自动解密落地并由多模态视觉大模型/OCR提取理解后回复)",
+            variable=self.var_image_enabled,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=self.COLOR_PRIMARY
+        )
+        chk_img.pack(anchor="w", padx=16, pady=4)
+
+        grid_i = tk.Frame(card_image, bg=self.COLOR_CARD)
+        grid_i.pack(fill="x", padx=16, pady=6)
+
+        # 策略选择
+        tk.Label(grid_i, text="图片处理策略:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=6)
+        curr_strat = getattr(self.config.image, "strategy", "auto")
+        strat_map = {
+            "auto": "auto (主流：多模态视觉大模型优先，不支持时自动降级 WinRT OCR - 推荐)",
+            "vision_only": "vision_only (仅使用多模态视觉大模型)",
+            "ocr_only": "ocr_only (仅使用 Windows 原生硬件加速 WinRT OCR 离线纯文字提取)"
+        }
+        self.var_image_strategy = tk.StringVar(value=strat_map.get(curr_strat, strat_map["auto"]))
+        self.cb_image_strategy = ttk.Combobox(
+            grid_i,
+            textvariable=self.var_image_strategy,
+            values=list(strat_map.values()),
+            state="readonly",
+            width=65,
+            font=("Microsoft YaHei UI", 9)
+        )
+        self.cb_image_strategy.grid(row=0, column=1, columnspan=2, sticky="w", padx=6, pady=6)
+        self.cb_image_strategy.bind("<<ComboboxSelected>>", self._on_image_strategy_changed)
+
+        # 视觉大模型配置区
+        self.f_vision = tk.Frame(card_image, bg=self.COLOR_CARD)
+        self.f_vision.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(self.f_vision, text="视觉大模型名称 (Vision Model):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        self.var_vision_model = tk.StringVar(value=getattr(self.config.image, "vision_model_name", "") or "")
+        self.cb_vision_model = ttk.Combobox(
+            self.f_vision,
+            textvariable=self.var_vision_model,
+            values=["qwen-vl-max", "gpt-4o", "gpt-4o-mini", "gemini-1.5-pro", "glm-4v"],
+            width=28,
+            font=("Consolas", 9)
+        )
+        self.cb_vision_model.grid(row=0, column=1, sticky="w", padx=6, pady=4)
+        tk.Label(self.f_vision, text="(留空则直接使用大模型配置页面的全局模型)", bg=self.COLOR_CARD, fg=self.COLOR_MUTED, font=("Microsoft YaHei UI", 8)).grid(row=0, column=2, sticky="w", padx=6)
+
+        tk.Label(self.f_vision, text="视觉模型 API Base URL (可选):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=4)
+        self.var_vision_url = tk.StringVar(value=getattr(self.config.image, "vision_api_url", "") or "")
+        ttk.Entry(self.f_vision, textvariable=self.var_vision_url, width=38, font=("Consolas", 9)).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        tk.Label(self.f_vision, text="(留空继承全局大模型 API 地址)", bg=self.COLOR_CARD, fg=self.COLOR_MUTED, font=("Microsoft YaHei UI", 8)).grid(row=1, column=2, sticky="w", padx=6)
+
+        tk.Label(self.f_vision, text="视觉模型 API Key (可选):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).grid(row=2, column=0, sticky="w", pady=4)
+        self.var_vision_key = tk.StringVar(value=getattr(self.config.image, "vision_api_key", "") or "")
+        ttk.Entry(self.f_vision, textvariable=self.var_vision_key, width=38, show="*", font=("Consolas", 9)).grid(row=2, column=1, sticky="w", padx=6, pady=4)
+        tk.Label(self.f_vision, text="(留空继承全局大模型 API Key)", bg=self.COLOR_CARD, fg=self.COLOR_MUTED, font=("Microsoft YaHei UI", 8)).grid(row=2, column=2, sticky="w", padx=6)
+
+        # 自动降级选项
+        self.var_fallback_ocr = tk.BooleanVar(value=getattr(self.config.image, "fallback_to_ocr", True))
+        self.chk_fallback_ocr = tk.Checkbutton(
+            card_image,
+            text="启用自动降级：当视觉大模型报错或接入的为纯文本大模型(如DeepSeek-chat)时，自动启用 Windows 原生 WinRT OCR 提取图片中文字送入大模型",
+            variable=self.var_fallback_ocr,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 8)
+        )
+        self.chk_fallback_ocr.pack(anchor="w", padx=16, pady=(4, 8))
+
+        # 图片测试工具沙盒
+        lf_itest = tk.LabelFrame(card_image, text=" 🖼️ 图片选择与识别解析测试工具 ", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold"), fg="#7c3aed", padx=12, pady=8)
+        lf_itest.pack(fill="x", padx=16, pady=(6, 12))
+
+        f_it_in = tk.Frame(lf_itest, bg=self.COLOR_CARD)
+        f_it_in.pack(fill="x", pady=4)
+
+        tk.Label(f_it_in, text="测试图片文件路径:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        self.var_image_test_path = tk.StringVar(value="")
+        ttk.Entry(f_it_in, textvariable=self.var_image_test_path, width=54, font=("Consolas", 9)).pack(side="left", padx=6, fill="x", expand=True)
+
+        btn_browse_img = tk.Button(
+            f_it_in,
+            text="📂 弹窗选择图片文件",
+            command=self._on_browse_image_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#f1f5f9",
+            fg=self.COLOR_TEXT,
+            relief="flat",
+            padx=10,
+            pady=3,
+            cursor="hand2"
+        )
+        btn_browse_img.pack(side="left", padx=4)
+
+        self.btn_run_image_test = tk.Button(
+            f_it_in,
+            text="⚡ 开始测试识别",
+            command=self._on_run_image_test,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#7c3aed",
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=3,
+            cursor="hand2"
+        )
+        self.btn_run_image_test.pack(side="left", padx=4)
+
+        f_it_p = tk.Frame(lf_itest, bg=self.COLOR_CARD)
+        f_it_p.pack(fill="x", pady=(2, 6))
+        tk.Label(f_it_p, text="测试指导提示词 (可选):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        self.var_image_test_prompt = tk.StringVar(value="请分析这张图片中的内容，提取关键信息并给出简明解答：")
+        ttk.Entry(f_it_p, textvariable=self.var_image_test_prompt, width=70, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=6, fill="x", expand=True)
+
+        tk.Label(lf_itest, text="图片识别解析输出 (策略方式、提取文字或视觉回答、耗时):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 8, "bold"), fg=self.COLOR_MUTED).pack(anchor="w", pady=(6, 2))
+        self.txt_image_test_result = scrolledtext.ScrolledText(lf_itest, wrap="word", height=5, font=("Microsoft YaHei UI", 9), bd=1, relief="solid")
+        self.txt_image_test_result.pack(fill="x", pady=2)
+        self.txt_image_test_result.insert("1.0", "提示：点击上方【📂 弹窗选择图片文件】选取本地 .jpg、.png、.bmp 或微信图片，再点击【⚡ 开始测试识别】即可测试多模态大模型视觉理解或 WinRT OCR 离线提取。")
+
+        # 底部保存大按钮
+        f_save_bot = tk.Frame(scroll_frame, bg=self.COLOR_BG)
+        f_save_bot.pack(fill="x", padx=16, pady=(10, 20))
+
+        btn_save_bot = tk.Button(
+            f_save_bot,
+            text="💾 保存多模态与媒体设置并立即生效",
+            command=self._on_save_media_config_click,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            activebackground="#1d4ed8",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=24,
+            pady=8,
+            cursor="hand2"
+        )
+        btn_save_bot.pack(anchor="center")
+
+    def _on_voice_engine_changed(self, event=None):
+        eng_sel = self.var_voice_engine.get().lower()
+        if "cloud" in eng_sel:
+            self.f_voice_local.pack_forget()
+            self.f_voice_cloud.pack(fill="x", padx=16, pady=4)
+        else:
+            self.f_voice_cloud.pack_forget()
+            self.f_voice_local.pack(fill="x", padx=16, pady=4)
+
+    def _on_image_strategy_changed(self, event=None):
+        strat_sel = self.var_image_strategy.get().lower()
+        if "ocr_only" in strat_sel:
+            self.f_vision.pack_forget()
+            self.chk_fallback_ocr.pack_forget()
+        else:
+            self.f_vision.pack(fill="x", padx=16, pady=4)
+            self.chk_fallback_ocr.pack(anchor="w", padx=16, pady=(4, 8))
+
+    def _on_browse_audio_test(self):
+        """弹窗选择待测试的音频文件"""
+        selected = filedialog.askopenfilename(
+            title="请选择用于测试识别的音频文件",
+            filetypes=[
+                ("常用音频文件", "*.silk;*.wav;*.mp3;*.m4a;*.ogg;*.flac"),
+                ("微信 SILK 语音", "*.silk"),
+                ("标准 WAV 音频", "*.wav"),
+                ("MP3 音频", "*.mp3"),
+                ("所有文件", "*.*")
+            ],
+            parent=self.root
+        )
+        if selected:
+            norm_path = os.path.normpath(selected)
+            self.var_voice_test_path.set(norm_path)
+
+    def _on_run_audio_test(self):
+        """异步执行语音识别转写测试"""
+        audio_path = self.var_voice_test_path.get().strip()
+        if not audio_path or not os.path.exists(audio_path):
+            messagebox.showwarning("提示", "请先选择真实存在的测试音频文件！")
+            return
+
+        self.btn_run_voice_test.configure(text="⏳ 正在转写中...", state="disabled")
+        self.txt_voice_test_result.delete("1.0", "end")
+        self.txt_voice_test_result.insert("1.0", "正在调用语音识别引擎转写音频，请稍候...\n")
+
+        # 抓取当前界面配置构造测试用 VoiceConfig
+        cfg = self.config.voice.model_copy()
+        cfg.engine = "cloud" if "cloud" in self.var_voice_engine.get().lower() else "local"
+        raw_m = self.var_voice_model.get().split()[0].strip()
+        cfg.whisper_model = raw_m
+        raw_dev = self.var_voice_device.get().split()[0].strip().lower()
+        cfg.whisper_device = raw_dev
+        cfg.cloud_api_url = self.var_voice_cloud_url.get().strip()
+        cfg.cloud_api_key = self.var_voice_cloud_key.get().strip()
+        cfg.cloud_model_name = self.var_voice_cloud_model.get().strip() or "whisper-1"
+
+        def worker():
+            start_ts = time.time()
+            try:
+                from agent_core.media_engine import VoiceRecognizer
+                recognizer = VoiceRecognizer(cfg)
+                ok, text, eng = recognizer.transcribe(audio_path)
+                cost = round((time.time() - start_ts) * 1000, 1)
+
+                def on_done():
+                    self.btn_run_voice_test.configure(text="⚡ 开始测试转写", state="normal")
+                    self.txt_voice_test_result.delete("1.0", "end")
+                    if ok:
+                        content = (
+                            f"✅ 【语音转写成功】\n"
+                            f"• 使用引擎: {eng}\n"
+                            f"• 转写耗时: {cost} 毫秒\n"
+                            f"• 识别文本:\n{text}"
+                        )
+                    else:
+                        content = (
+                            f"❌ 【语音转写失败】\n"
+                            f"• 使用引擎: {eng}\n"
+                            f"• 耗时: {cost} 毫秒\n"
+                            f"• 错误信息: {text}"
+                        )
+                    self.txt_voice_test_result.insert("1.0", content)
+                self.dispatch_ui(on_done)
+            except Exception as e:
+                def on_err():
+                    self.btn_run_voice_test.configure(text="⚡ 开始测试转写", state="normal")
+                    self.txt_voice_test_result.delete("1.0", "end")
+                    self.txt_voice_test_result.insert("1.0", f"❌ 异常报错: {e}")
+                self.dispatch_ui(on_err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_browse_image_test(self):
+        """弹窗选择待测试的图片文件"""
+        selected = filedialog.askopenfilename(
+            title="请选择用于测试识别的图片文件",
+            filetypes=[
+                ("常用图片文件", "*.png;*.jpg;*.jpeg;*.bmp;*.webp"),
+                ("PNG 图片", "*.png"),
+                ("JPEG 图片", "*.jpg;*.jpeg"),
+                ("所有文件", "*.*")
+            ],
+            parent=self.root
+        )
+        if selected:
+            norm_path = os.path.normpath(selected)
+            self.var_image_test_path.set(norm_path)
+
+    def _on_run_image_test(self):
+        """异步执行图片识别与多模态/OCR测试"""
+        img_path = self.var_image_test_path.get().strip()
+        if not img_path or not os.path.exists(img_path):
+            messagebox.showwarning("提示", "请先选择真实存在的测试图片文件！")
+            return
+
+        user_prompt = self.var_image_test_prompt.get().strip()
+        self.btn_run_image_test.configure(text="⏳ 正在识别中...", state="disabled")
+        self.txt_image_test_result.delete("1.0", "end")
+        self.txt_image_test_result.insert("1.0", "正在调用视觉大模型或启动 WinRT OCR 硬件加速识别，请稍候...\n")
+
+        # 抓取当前界面配置构造测试用 ImageConfig
+        img_cfg = self.config.image.model_copy()
+        strat_val = self.var_image_strategy.get().lower()
+        if "vision_only" in strat_val:
+            img_cfg.strategy = "vision_only"
+        elif "ocr_only" in strat_val:
+            img_cfg.strategy = "ocr_only"
+        else:
+            img_cfg.strategy = "auto"
+        img_cfg.vision_model_name = self.var_vision_model.get().strip()
+        img_cfg.vision_api_url = self.var_vision_url.get().strip()
+        img_cfg.vision_api_key = self.var_vision_key.get().strip()
+        img_cfg.fallback_to_ocr = bool(self.var_fallback_ocr.get())
+
+        def worker():
+            start_ts = time.time()
+            try:
+                from agent_core.media_engine import ImageEngine
+                engine = ImageEngine(img_cfg, self.config.llm)
+                res = engine.process_image(img_path, user_prompt=user_prompt)
+                cost = round((time.time() - start_ts) * 1000, 1)
+
+                def on_done():
+                    self.btn_run_image_test.configure(text="⚡ 开始测试识别", state="normal")
+                    self.txt_image_test_result.delete("1.0", "end")
+                    lines = [
+                        f"【识别耗时】 {cost} 毫秒",
+                        f"【采用策略方案】 {res.get('strategy')}",
+                        f"【执行状态】 {'成功' if res.get('success') else '失败'}",
+                    ]
+                    strat = res.get("strategy")
+                    if strat == "vision":
+                        lines.append("\n" + "=" * 50)
+                        lines.append("【多模态视觉大模型 (Vision LLM) 识别与直接回答】：")
+                        lines.append(res.get("direct_reply", "(无回答)"))
+                    elif strat in ("ocr_fallback", "ocr_only"):
+                        lines.append("\n" + "=" * 50)
+                        tag = "【WinRT OCR 硬件加速纯文字提取】" if strat == "ocr_only" else "【自动降级：WinRT OCR 提取文字】"
+                        lines.append(tag)
+                        lines.append(res.get("ocr_text", "(未识别到文字)"))
+                    else:
+                        lines.append("\n" + "=" * 50)
+                        lines.append(f"【报错或回退信息】: {res.get('error') or res.get('direct_reply')}")
+                    lines.append("=" * 50)
+                    self.txt_image_test_result.insert("1.0", "\n".join(lines))
+                self.dispatch_ui(on_done)
+            except Exception as e:
+                def on_err():
+                    self.btn_run_image_test.configure(text="⚡ 开始测试识别", state="normal")
+                    self.txt_image_test_result.delete("1.0", "end")
+                    self.txt_image_test_result.insert("1.0", f"❌ 异常报错: {e}")
+                self.dispatch_ui(on_err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_save_media_config_click(self):
+        """保存多模态与媒体配置并热生效"""
+        try:
+            # 1. 语音配置
+            self.config.voice.enabled = bool(self.var_voice_enabled.get())
+            self.config.voice.engine = "cloud" if "cloud" in self.var_voice_engine.get().lower() else "local"
+            raw_m = self.var_voice_model.get().split()[0].strip()
+            self.config.voice.whisper_model = raw_m
+            raw_dev = self.var_voice_device.get().split()[0].strip().lower()
+            self.config.voice.whisper_device = raw_dev
+            self.config.voice.cloud_api_url = self.var_voice_cloud_url.get().strip()
+            self.config.voice.cloud_api_key = self.var_voice_cloud_key.get().strip()
+            self.config.voice.cloud_model_name = self.var_voice_cloud_model.get().strip() or "whisper-1"
+
+            # 2. 图片配置
+            self.config.image.enabled = bool(self.var_image_enabled.get())
+            strat_val = self.var_image_strategy.get().lower()
+            if "vision_only" in strat_val:
+                self.config.image.strategy = "vision_only"
+            elif "ocr_only" in strat_val:
+                self.config.image.strategy = "ocr_only"
+            else:
+                self.config.image.strategy = "auto"
+            self.config.image.vision_model_name = self.var_vision_model.get().strip()
+            self.config.image.vision_api_url = self.var_vision_url.get().strip()
+            self.config.image.vision_api_key = self.var_vision_key.get().strip()
+            self.config.image.fallback_to_ocr = bool(self.var_fallback_ocr.get())
+
+            # 3. 持久化保存到 config.json
+            self.config.save()
+
+            # 4. 热生效到底层实例
+            if hasattr(self.bridge, "voice_recognizer"):
+                self.bridge.voice_recognizer.update_config(self.config.voice)
+            if hasattr(self.pipeline, "image_engine"):
+                self.pipeline.image_engine.update_config(self.config.image, self.config.llm)
+
+            messagebox.showinfo(
+                "成功",
+                f"✅ 多模态与媒体设置已成功保存并立即生效！\n\n"
+                f"• 语音识别: {'已开启' if self.config.voice.enabled else '已关闭'} ({self.config.voice.engine})\n"
+                f"• 语音模型: {self.config.voice.whisper_model} ({self.config.voice.whisper_device})\n"
+                f"• 图片识别: {'已开启' if self.config.image.enabled else '已关闭'} ({self.config.image.strategy})\n"
+                f"• 自动OCR降级: {'开启' if self.config.image.fallback_to_ocr else '关闭'}"
+            )
+        except Exception as e:
+            messagebox.showerror("保存失败", f"保存多模态设置时出错: {e}")
+
+    # -------------------------------------------------------------------------
+    # Tab 6: 交互测试沙盒 (Sandbox)
     # -------------------------------------------------------------------------
     def _build_sandbox_tab(self):
         parent = self.tab_sandbox
