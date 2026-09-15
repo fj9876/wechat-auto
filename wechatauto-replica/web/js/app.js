@@ -299,6 +299,26 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("kbFolderInput").value = currentConfig.rag.kb_folder_path || "";
       updateRAGUIState(ragEnabled);
 
+      // 填充多模态媒体配置 (语音 ASR & 图片 Vision/OCR)
+      if (currentConfig.voice) {
+        document.getElementById("voiceEnabledCheckbox").checked = currentConfig.voice.enabled !== false;
+        document.getElementById("voiceEngineSelect").value = currentConfig.voice.engine || "local";
+        document.getElementById("whisperModelSelect").value = currentConfig.voice.whisper_model || "base";
+        document.getElementById("whisperDeviceSelect").value = currentConfig.voice.whisper_device || "auto";
+        document.getElementById("cloudAsrUrlInput").value = currentConfig.voice.cloud_api_url || "";
+        document.getElementById("cloudAsrKeyInput").value = currentConfig.voice.cloud_api_key || "";
+        document.getElementById("cloudAsrModelInput").value = currentConfig.voice.cloud_model_name || "whisper-1";
+      }
+      if (currentConfig.image) {
+        document.getElementById("imageEnabledCheckbox").checked = currentConfig.image.enabled !== false;
+        document.getElementById("imageStrategySelect").value = currentConfig.image.strategy || "auto";
+        document.getElementById("visionModelInput").value = currentConfig.image.vision_model_name || "";
+        document.getElementById("visionUrlInput").value = currentConfig.image.vision_api_url || "";
+        document.getElementById("visionKeyInput").value = currentConfig.image.vision_api_key || "";
+        document.getElementById("fallbackOcrCheckbox").checked = currentConfig.image.fallback_to_ocr !== false;
+      }
+      updateVoiceEngineUI();
+
       // 加载联系人列表
       await loadContacts();
 
@@ -780,6 +800,206 @@ document.addEventListener("DOMContentLoaded", () => {
     currentConfig.rag.kb_folder_path = document.getElementById("kbFolderInput").value.trim();
     await saveConfigToServer("本地 RAG 知识库配置已保存！");
   });
+
+  // ------------------------------------------------------------------------
+  // 8.5 多模态媒体设置 (语音识别 ASR & 图片识别 Vision/OCR)
+  // ------------------------------------------------------------------------
+  function updateVoiceEngineUI() {
+    const engine = document.getElementById("voiceEngineSelect")?.value || "local";
+    const isCloud = engine === "cloud";
+    const cloudUrlGrp = document.getElementById("cloudAsrUrlGroup");
+    const cloudKeyGrp = document.getElementById("cloudAsrKeyGroup");
+    const cloudModelGrp = document.getElementById("cloudAsrModelGroup");
+    const whisperModelGrp = document.getElementById("whisperModelGroup");
+    const whisperDeviceGrp = document.getElementById("whisperDeviceGroup");
+
+    if (cloudUrlGrp) cloudUrlGrp.style.display = isCloud ? "block" : "none";
+    if (cloudKeyGrp) cloudKeyGrp.style.display = isCloud ? "block" : "none";
+    if (cloudModelGrp) cloudModelGrp.style.display = isCloud ? "block" : "none";
+    if (whisperModelGrp) whisperModelGrp.style.display = isCloud ? "none" : "block";
+    if (whisperDeviceGrp) whisperDeviceGrp.style.display = isCloud ? "none" : "block";
+  }
+
+  const voiceEngineSelect = document.getElementById("voiceEngineSelect");
+  if (voiceEngineSelect) {
+    voiceEngineSelect.addEventListener("change", updateVoiceEngineUI);
+  }
+
+  // 保存多模态媒体配置
+  const saveMediaConfigBtn = document.getElementById("saveMediaConfigBtn");
+  if (saveMediaConfigBtn) {
+    saveMediaConfigBtn.addEventListener("click", async () => {
+      if (!currentConfig.voice) currentConfig.voice = {};
+      if (!currentConfig.image) currentConfig.image = {};
+
+      currentConfig.voice.enabled = document.getElementById("voiceEnabledCheckbox").checked;
+      currentConfig.voice.engine = document.getElementById("voiceEngineSelect").value;
+      currentConfig.voice.whisper_model = document.getElementById("whisperModelSelect").value;
+      currentConfig.voice.whisper_device = document.getElementById("whisperDeviceSelect").value;
+      currentConfig.voice.cloud_api_url = document.getElementById("cloudAsrUrlInput").value.trim();
+      currentConfig.voice.cloud_api_key = document.getElementById("cloudAsrKeyInput").value.trim();
+      currentConfig.voice.cloud_model_name = document.getElementById("cloudAsrModelInput").value.trim() || "whisper-1";
+
+      currentConfig.image.enabled = document.getElementById("imageEnabledCheckbox").checked;
+      currentConfig.image.strategy = document.getElementById("imageStrategySelect").value;
+      currentConfig.image.vision_model_name = document.getElementById("visionModelInput").value.trim();
+      currentConfig.image.vision_api_url = document.getElementById("visionUrlInput").value.trim();
+      currentConfig.image.vision_api_key = document.getElementById("visionKeyInput").value.trim();
+      currentConfig.image.fallback_to_ocr = document.getElementById("fallbackOcrCheckbox").checked;
+
+      await saveConfigToServer("多模态语音与图片识别配置已成功保存！");
+    });
+  }
+
+  // 弹窗选择音频文件
+  const selectAudioFileBtn = document.getElementById("selectAudioFileBtn");
+  if (selectAudioFileBtn) {
+    selectAudioFileBtn.addEventListener("click", async () => {
+      selectAudioFileBtn.disabled = true;
+      selectAudioFileBtn.textContent = "⏳ 选择中...";
+      try {
+        const res = await fetch("/api/utils/select_file?file_type=audio", { method: "POST" });
+        const data = await res.json();
+        if (data.success && data.file_path) {
+          document.getElementById("voiceTestAudioInput").value = data.file_path;
+          showToast(`已选音频: ${data.file_path}`, "success");
+        }
+      } catch (e) {
+        showToast(`选择音频失败: ${e.message}`, "error");
+      } finally {
+        selectAudioFileBtn.disabled = false;
+        selectAudioFileBtn.textContent = "📂 选择音频";
+      }
+    });
+  }
+
+  // 测试语音转写
+  const testVoiceBtn = document.getElementById("testVoiceBtn");
+  if (testVoiceBtn) {
+    testVoiceBtn.addEventListener("click", async () => {
+      const audioPath = document.getElementById("voiceTestAudioInput").value.trim();
+      if (!audioPath) {
+        showToast("请先输入或选择要测试的音频文件路径", "warning");
+        return;
+      }
+      testVoiceBtn.disabled = true;
+      testVoiceBtn.textContent = "⚡ 正在转写中...";
+      const resBox = document.getElementById("voiceTestResultBox");
+      const resText = document.getElementById("voiceTestResultText");
+      resBox.style.display = "block";
+      resText.textContent = "正在调用语音引擎转写音频，请稍候...";
+
+      try {
+        const payload = {
+          audio_path: audioPath,
+          engine: document.getElementById("voiceEngineSelect").value,
+          whisper_model: document.getElementById("whisperModelSelect").value,
+          cloud_api_url: document.getElementById("cloudAsrUrlInput").value.trim(),
+          cloud_api_key: document.getElementById("cloudAsrKeyInput").value.trim(),
+          cloud_model_name: document.getElementById("cloudAsrModelInput").value.trim(),
+        };
+        const res = await fetch("/api/media/test_voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          resText.innerHTML = `<strong>✅ 识别成功 [${data.engine}]：</strong><br><br>${data.text}`;
+          showToast("语音识别成功", "success");
+        } else {
+          resText.innerHTML = `<strong>❌ 识别失败：</strong><br><br>${data.message}`;
+          showToast("语音转写失败", "error");
+        }
+      } catch (e) {
+        resText.textContent = `请求异常: ${e.message}`;
+      } finally {
+        testVoiceBtn.disabled = false;
+        testVoiceBtn.textContent = "⚡ 开始测试转写";
+      }
+    });
+  }
+
+  // 弹窗选择图片文件
+  const selectImageFileBtn = document.getElementById("selectImageFileBtn");
+  if (selectImageFileBtn) {
+    selectImageFileBtn.addEventListener("click", async () => {
+      selectImageFileBtn.disabled = true;
+      selectImageFileBtn.textContent = "⏳ 选择中...";
+      try {
+        const res = await fetch("/api/utils/select_file?file_type=image", { method: "POST" });
+        const data = await res.json();
+        if (data.success && data.file_path) {
+          document.getElementById("imageTestPathInput").value = data.file_path;
+          showToast(`已选图片: ${data.file_path}`, "success");
+        }
+      } catch (e) {
+        showToast(`选择图片失败: ${e.message}`, "error");
+      } finally {
+        selectImageFileBtn.disabled = false;
+        selectImageFileBtn.textContent = "📂 选择图片";
+      }
+    });
+  }
+
+  // 测试图片识别与解析
+  const testImageBtn = document.getElementById("testImageBtn");
+  if (testImageBtn) {
+    testImageBtn.addEventListener("click", async () => {
+      const imgPath = document.getElementById("imageTestPathInput").value.trim();
+      const prompt = document.getElementById("imageTestPromptInput").value.trim();
+      if (!imgPath) {
+        showToast("请先输入或选择要测试的图片文件路径", "warning");
+        return;
+      }
+      testImageBtn.disabled = true;
+      testImageBtn.textContent = "⚡ 正在解析中...";
+      const resBox = document.getElementById("imageTestResultBox");
+      const resTag = document.getElementById("imageTestResultTag");
+      const resContent = document.getElementById("imageTestResultContent");
+      resBox.style.display = "block";
+      resTag.textContent = "正在处理...";
+      resContent.textContent = "正在调用视觉大模型或启动 WinRT OCR 硬件加速，请稍候...";
+
+      try {
+        const payload = {
+          image_path: imgPath,
+          prompt: prompt,
+          strategy: document.getElementById("imageStrategySelect").value,
+          vision_model_name: document.getElementById("visionModelInput").value.trim(),
+        };
+        const res = await fetch("/api/media/test_image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          if (data.strategy === "vision") {
+            resTag.innerHTML = `<span style="color:#10b981;">✅ 识别方案：主流多模态视觉大模型 (Vision LLM) 成功解析</span>`;
+            resContent.textContent = data.direct_reply;
+          } else if (data.strategy === "ocr_fallback") {
+            resTag.innerHTML = `<span style="color:#f59e0b;">⚡ 识别方案：大模型不支持视觉，已自动无缝降级为 Windows 原生 WinRT OCR 提取</span>`;
+            resContent.innerHTML = `<strong>【OCR 提取出的全部文字】：</strong>\n\n${data.ocr_text}`;
+          } else if (data.strategy === "ocr_only") {
+            resTag.innerHTML = `<span style="color:#38bdf8;">✅ 识别方案：WinRT OCR 纯文字硬件加速提取</span>`;
+            resContent.innerHTML = `<strong>【OCR 提取文字】：</strong>\n\n${data.ocr_text}`;
+          }
+          showToast("图片解析成功", "success");
+        } else {
+          resTag.innerHTML = `<span style="color:#ef4444;">❌ 识别失败 [${data.strategy}]</span>`;
+          resContent.textContent = data.error || data.direct_reply || "未能识别图片内容";
+          showToast("图片解析失败", "error");
+        }
+      } catch (e) {
+        resTag.textContent = "错误";
+        resContent.textContent = `请求异常: ${e.message}`;
+      } finally {
+        testImageBtn.disabled = false;
+        testImageBtn.textContent = "⚡ 测试识别与解析";
+      }
+    });
+  }
 
   // ------------------------------------------------------------------------
   // 9. 在线模拟沙盒测试

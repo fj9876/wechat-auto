@@ -18,6 +18,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple, Callable
 
 from .config import AppConfig
+from .media_engine import VoiceRecognizer
 from .pipeline import AgentPipeline, PipelineResult
 
 # 微信系统内置功能号与公众号过滤黑名单
@@ -47,6 +48,13 @@ class WeChatBridge:
         self._last_send_ts = 0.0
         self._recent_sent_replies: collections.deque = collections.deque(maxlen=200)
         self._recent_incoming_queries: collections.deque = collections.deque(maxlen=100)
+        self._recent_group_at_records: Dict[str, float] = {}  # 记录群内提问者近期@机器人的时间戳 (key: username_sender)
+        self.voice_recognizer = VoiceRecognizer(self.config.voice)
+
+    def update_config(self, config: AppConfig) -> None:
+        """更新微信桥接器配置"""
+        self.config = config
+        self.voice_recognizer.update_config(config.voice)
 
     def register_event_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         """注册前端 WebSocket 事件广播回调"""
@@ -422,7 +430,7 @@ class WeChatBridge:
         primary = candidates[0] if candidates else username
         return primary, candidates
 
-    def _should_auto_reply(self, username: str, sender_name: str, content: str) -> Tuple[bool, bool, bool, str]:
+    def _should_auto_reply(self, username: str, sender_name: str, content: str, has_image: bool = False) -> Tuple[bool, bool, bool, str]:
         """白名单与群聊@过滤策略判定
 
         Returns:
@@ -452,6 +460,14 @@ class WeChatBridge:
             is_at, stripped = self._is_message_for_me_in_group(content, group_id=username)
             is_at_me = is_at
             clean_text = stripped
+
+            at_key = f"{username}_{sender_name}"
+            if is_at_me:
+                self._recent_group_at_records[at_key] = time.time()
+            elif has_image:
+                # 若发送的是图片且未直接打出@，检测该用户近 60 秒内是否在群内 @ 过机器人
+                if (time.time() - self._recent_group_at_records.get(at_key, 0)) < 60:
+                    is_at_me = True
 
             if self.config.targets.group_at_only and not is_at_me:
                 # 开启了仅@回复，但未被@ -> 忽略
@@ -600,6 +616,54 @@ class WeChatBridge:
                     sender_name = username
 
             # -------------------------------------------------------------
+            # 多模态媒体处理：语音提取转写 (ASR) 与 图片解密落地
+            # -------------------------------------------------------------
+            detected_voice_path = None
+            detected_image_path = None
+            raw_type = str(msg_row.get("type", "文本"))
+            local_id = msg_row.get("local_id")
+
+            # A. 语音消息自动下载与转文字
+            if (raw_type == "语音" or msg_row.get("local_type") == 34) and local_id and self.config.voice.enabled:
+                try:
+                    from wechatauto.media import MediaDownloader
+                    if self._db is not None:
+                        md = MediaDownloader(self._db)
+                        detected_voice_path = md.download_voice(username, int(local_id))
+                except Exception as e:
+                    self.emit_event("log", {"level": "warning", "message": f"⚠️ 提取语音媒体失败: {e}"})
+
+                if detected_voice_path and os.path.exists(detected_voice_path):
+                    ok_trans, text_trans, eng_name = self.voice_recognizer.transcribe(detected_voice_path)
+                    if ok_trans and text_trans:
+                        msg_body = text_trans
+                        self.emit_event("log", {
+                            "level": "info",
+                            "message": f"🎤 [{eng_name} 语音识别成功] {display_title if 'display_title' in locals() else sender_name}: \"{text_trans}\""
+                        })
+                    else:
+                        self.emit_event("log", {
+                            "level": "warning",
+                            "message": f"⚠️ [语音转写未检测到文字] {text_trans}"
+                        })
+
+            # B. 图片消息自动解密落地
+            if (raw_type == "图片" or msg_row.get("local_type") == 3) and local_id and self.config.image.enabled:
+                try:
+                    from wechatauto.media import MediaDownloader
+                    if self._db is not None:
+                        md = MediaDownloader(self._db)
+                        detected_image_path = md.download_image(username, int(local_id))
+                except Exception as e:
+                    self.emit_event("log", {"level": "warning", "message": f"⚠️ 解密图片媒体失败: {e}"})
+
+                if detected_image_path and os.path.exists(detected_image_path):
+                    self.emit_event("log", {
+                        "level": "info",
+                        "message": f"🖼️ [收到图片并解密落地] 文件: {os.path.basename(detected_image_path)}"
+                    })
+
+            # -------------------------------------------------------------
             # 1. 实时全透明广播收信日志 (关键需求4：不管是否回复，第一时间呈现)
             # -------------------------------------------------------------
             display_title = f"[群聊: {group_name} | 发送者: {sender_name}]" if is_group else f"[好友: {sender_name}]"
@@ -721,7 +785,9 @@ class WeChatBridge:
             # -------------------------------------------------------------
             # 3. 过滤规则判定 (白名单、群聊@)
             # -------------------------------------------------------------
-            should_reply, is_group, is_at_me, clean_query = self._should_auto_reply(username, sender_name, msg_body)
+            should_reply, is_group, is_at_me, clean_query = self._should_auto_reply(
+                username, sender_name, msg_body, has_image=bool(detected_image_path)
+            )
             if not should_reply:
                 reason = "群聊消息未 @机器人" if (is_group and self.config.targets.group_at_only and not is_at_me) else "未在自动回复白名单中"
                 self.emit_event("message_ignored", {
@@ -761,6 +827,8 @@ class WeChatBridge:
                 content=clean_query,
                 is_group=is_group,
                 is_at_me=is_at_me,
+                image_path=detected_image_path,
+                raw_msg_type=raw_type,
             )
 
             # 广播完整流水线决策链路

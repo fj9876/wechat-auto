@@ -57,6 +57,11 @@
           <span class="tab-label">本地知识库 (RAG)</span>
           <span class="sub-chip" id="ragStatusChip">可选</span>
         </button>
+        <button class="nav-tab" data-tab="tab-multimodal">
+          <span class="tab-icon">🎙️</span>
+          <span class="tab-label">多模态与媒体设置</span>
+          <span class="sub-chip">语音/图片</span>
+        </button>
         <button class="nav-tab" data-tab="tab-sandbox">
           <span class="tab-icon">💬</span>
           <span class="tab-label">在线沙盒测试</span>
@@ -452,6 +457,149 @@
                 <button class="btn btn-outline" id="ragSearchTestBtn">测试检索</button>
               </div>
               <div class="search-result-box" id="ragSearchResultBox" style="display: none;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 多模态媒体设置 (语音 ASR & 图片 Vision/OCR) -->
+      <section id="tab-multimodal" class="content-tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>🎙️ 语音识别 (ASR) 与 🖼️ 图片识别 (Vision/OCR)</h2>
+              <p class="section-desc">配置微信语音消息与图片消息的智能解析策略，支持本地 faster-whisper、云端 Whisper、多模态视觉大模型及 Windows 原生 WinRT OCR 自动降级提取。</p>
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-primary" id="saveMediaConfigBtn">💾 保存多模态配置</button>
+            </div>
+          </div>
+
+          <!-- 语音识别 (ASR) 配置卡 -->
+          <div class="card" style="margin-top: 1rem; border: 1px solid var(--border-color, #334155);">
+            <div class="card-header">
+              <div class="toggle-meta" style="display: flex; align-items: center; gap: 1rem;">
+                <label class="toggle-switch lg">
+                  <input type="checkbox" id="voiceEnabledCheckbox">
+                  <span class="slider"></span>
+                </label>
+                <div>
+                  <h3 style="margin: 0;">启用微信语音识别 (ASR)</h3>
+                  <span class="toggle-sub">收到语音时自动从底层提取 SILK 并转写为文字送入智能体回复</span>
+                </div>
+              </div>
+            </div>
+            <div class="form-grid" id="voiceConfigFields" style="padding: 1rem;">
+              <div class="form-group col-6">
+                <label for="voiceEngineSelect">语音识别引擎</label>
+                <select id="voiceEngineSelect" class="form-control">
+                  <option value="local">本地 faster-whisper (推荐：离线免费、低延迟、自动GPU加速)</option>
+                  <option value="cloud">在线云端 ASR (OpenAI Whisper / 硅基流动 / DashScope 兼容接口)</option>
+                </select>
+              </div>
+              <div class="form-group col-6" id="whisperModelGroup">
+                <label for="whisperModelSelect">本地 Whisper 模型规格</label>
+                <select id="whisperModelSelect" class="form-control">
+                  <option value="tiny">tiny (极轻量 ~75MB，速度最快)</option>
+                  <option value="base" selected>base (推荐 ~145MB，速度准确度平衡)</option>
+                  <option value="small">small (~480MB，高准确度)</option>
+                  <option value="medium">medium (~1.5GB，专业级准确度)</option>
+                </select>
+              </div>
+              <div class="form-group col-6" id="whisperDeviceGroup">
+                <label for="whisperDeviceSelect">推理计算设备</label>
+                <select id="whisperDeviceSelect" class="form-control">
+                  <option value="auto">auto (自动检测：优先 CUDA 显卡，否则 CPU)</option>
+                  <option value="cpu">CPU (全兼容免显卡)</option>
+                  <option value="cuda">CUDA (NVIDIA 独立显卡加速)</option>
+                </select>
+              </div>
+              <div class="form-group col-6" id="cloudAsrUrlGroup" style="display: none;">
+                <label for="cloudAsrUrlInput">云端 ASR API Base URL</label>
+                <input type="text" id="cloudAsrUrlInput" placeholder="https://api.openai.com/v1">
+              </div>
+              <div class="form-group col-6" id="cloudAsrKeyGroup" style="display: none;">
+                <label for="cloudAsrKeyInput">云端 ASR API Key</label>
+                <input type="password" id="cloudAsrKeyInput" placeholder="sk-xxxxxxxx">
+              </div>
+              <div class="form-group col-6" id="cloudAsrModelGroup" style="display: none;">
+                <label for="cloudAsrModelInput">云端模型名称</label>
+                <input type="text" id="cloudAsrModelInput" value="whisper-1">
+              </div>
+
+              <!-- 语音在线测试沙盒 -->
+              <div class="form-group col-12" style="background: rgba(15,23,42,0.6); padding: 1rem; border-radius: 8px; border: 1px dashed #475569;">
+                <label style="font-weight: bold; color: #38bdf8;">🎙️ 语音识别转写测试</label>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                  <input type="text" id="voiceTestAudioInput" placeholder="输入或选择音频路径 (.silk, .wav, .mp3, .m4a)..." style="flex: 1;">
+                  <button type="button" class="btn btn-secondary" id="selectAudioFileBtn">📂 选择音频</button>
+                  <button type="button" class="btn btn-primary" id="testVoiceBtn">⚡ 开始测试转写</button>
+                </div>
+                <div id="voiceTestResultBox" style="display: none; margin-top: 0.8rem; padding: 0.8rem; border-radius: 6px; background: #1e293b; border-left: 4px solid #38bdf8;">
+                  <div id="voiceTestResultText" style="white-space: pre-wrap; font-size: 0.95rem;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 图片识别 (Vision & OCR) 配置卡 -->
+          <div class="card" style="margin-top: 1.5rem; border: 1px solid var(--border-color, #334155);">
+            <div class="card-header">
+              <div class="toggle-meta" style="display: flex; align-items: center; gap: 1rem;">
+                <label class="toggle-switch lg">
+                  <input type="checkbox" id="imageEnabledCheckbox">
+                  <span class="slider"></span>
+                </label>
+                <div>
+                  <h3 style="margin: 0;">启用微信图片识别与分析</h3>
+                  <span class="toggle-sub">收到图片时自动解密落地并由视觉大模型/OCR提取理解后回复</span>
+                </div>
+              </div>
+            </div>
+            <div class="form-grid" id="imageConfigFields" style="padding: 1rem;">
+              <div class="form-group col-6">
+                <label for="imageStrategySelect">图片处理策略</label>
+                <select id="imageStrategySelect" class="form-control">
+                  <option value="auto">auto (主流：多模态视觉大模型优先，不支持时自动降级 WinRT OCR)</option>
+                  <option value="vision_only">vision_only (仅使用视觉大模型)</option>
+                  <option value="ocr_only">ocr_only (仅使用 Windows 原生 WinRT OCR 纯文字提取)</option>
+                </select>
+              </div>
+              <div class="form-group col-6">
+                <label for="visionModelInput">视觉大模型名称 (Vision Model)</label>
+                <input type="text" id="visionModelInput" placeholder="留空使用全局模型，或填 qwen-vl-max, gpt-4o 等">
+              </div>
+              <div class="form-group col-6">
+                <label for="visionUrlInput">视觉模型 API URL (可选)</label>
+                <input type="text" id="visionUrlInput" placeholder="留空继承全局大模型 API URL">
+              </div>
+              <div class="form-group col-6">
+                <label for="visionKeyInput">视觉模型 API Key (可选)</label>
+                <input type="password" id="visionKeyInput" placeholder="留空继承全局大模型 API Key">
+              </div>
+              <div class="form-group col-12">
+                <label class="checkbox-label" style="cursor: pointer;">
+                  <input type="checkbox" id="fallbackOcrCheckbox" checked>
+                  <span><strong>启用自动降级：</strong> 当视觉模型报错或配置的为纯文本大模型（如 DeepSeek-chat）时，自动启用 Windows 原生 WinRT OCR 提取图片中文字并转入大模型作答</span>
+                </label>
+              </div>
+
+              <!-- 图片识别测试沙盒 -->
+              <div class="form-group col-12" style="background: rgba(15,23,42,0.6); padding: 1rem; border-radius: 8px; border: 1px dashed #475569;">
+                <label style="font-weight: bold; color: #a855f7;">🖼️ 图片多模态与 OCR 降级测试</label>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                  <input type="text" id="imageTestPathInput" placeholder="输入或选择测试图片路径 (.jpg, .png, .webp)..." style="flex: 1;">
+                  <button type="button" class="btn btn-secondary" id="selectImageFileBtn">📂 选择图片</button>
+                  <button type="button" class="btn btn-primary" id="testImageBtn">⚡ 测试识别与解析</button>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                  <input type="text" id="imageTestPromptInput" placeholder="附带提示词 (例如: 请总结图中的诊断意见，或留空自动分析)...">
+                </div>
+                <div id="imageTestResultBox" style="display: none; margin-top: 0.8rem; padding: 0.8rem; border-radius: 6px; background: #1e293b; border-left: 4px solid #a855f7;">
+                  <div id="imageTestResultTag" style="font-size: 0.8rem; font-weight: bold; margin-bottom: 0.4rem;"></div>
+                  <div id="imageTestResultContent" style="white-space: pre-wrap; font-size: 0.95rem;"></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

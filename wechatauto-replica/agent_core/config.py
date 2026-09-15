@@ -147,12 +147,37 @@ class SingleGroupConfig(BaseModel):
     auto_kick_on_rejoin: bool = Field(default=True, description="是否开启黑名单复入自动秒踢")
 
 
+
+class VoiceConfig(BaseModel):
+    """语音识别 (ASR) 配置"""
+    enabled: bool = Field(default=True, description="是否启用微信语音识别")
+    engine: str = Field(default="local", description="语音识别引擎: local (本地 faster-whisper) 或 cloud (在线云端 ASR)")
+    whisper_model: str = Field(default="base", description="本地 faster-whisper 模型规格: tiny, base, small, medium")
+    whisper_device: str = Field(default="auto", description="本地推理设备: auto, cpu, cuda")
+    cloud_api_url: str = Field(default="https://api.openai.com/v1", description="云端 Whisper API Base URL")
+    cloud_api_key: str = Field(default="", description="云端 ASR API Key")
+    cloud_model_name: str = Field(default="whisper-1", description="云端语音识别模型名称")
+
+
+class ImageConfig(BaseModel):
+    """图片多模态与 OCR 识别配置"""
+    enabled: bool = Field(default=True, description="是否启用微信图片识别与分析")
+    strategy: str = Field(default="auto", description="图片处理策略: auto (首选多模态视觉并自动降级OCR), vision_only (仅视觉模型), ocr_only (仅纯文字OCR)")
+    vision_api_url: str = Field(default="", description="视觉大模型 API Base URL (留空继承全局大模型配置)")
+    vision_api_key: str = Field(default="", description="视觉大模型 API Key (留空继承全局大模型配置)")
+    vision_model_name: str = Field(default="", description="视觉大模型名称，如 qwen-vl-max, gpt-4o 等 (留空使用全局大模型)")
+    fallback_to_ocr: bool = Field(default=True, description="当大模型不支持视觉或调用失败时，是否自动无缝降级为纯文字 OCR 提取")
+    ocr_engine: str = Field(default="winrt", description="本地备用 OCR 引擎: winrt (Windows 原生硬件加速 OCR)")
+
+
 class AppConfig(BaseModel):
     """系统全局配置"""
     llm: LLMConfig = Field(default_factory=LLMConfig)
     targets: TargetFilterConfig = Field(default_factory=TargetFilterConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    image: ImageConfig = Field(default_factory=ImageConfig)
     groups_config: Dict[str, SingleGroupConfig] = Field(
         default_factory=dict,
         description="群聊专属个性化配置字典，key 为 chatroom_id"

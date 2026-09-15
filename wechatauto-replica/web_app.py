@@ -180,7 +180,7 @@ def update_config(new_config: Dict[str, Any]):
         llm_client.update_config(config.llm)
         rag_engine.update_config(config.rag, config.llm)
         pipeline.update_config(config)
-        wechat_bridge.config = config
+        wechat_bridge.update_config(config)
 
         wechat_bridge.emit_event("log", {
             "level": "success",
@@ -215,6 +215,120 @@ def get_upstream_models(req: TestLLMRequest):
         "models": models,
         "message": msg,
     }
+
+
+class TestVoiceRequest(BaseModel):
+    audio_path: Optional[str] = None
+    engine: Optional[str] = None
+    whisper_model: Optional[str] = None
+    cloud_api_url: Optional[str] = None
+    cloud_api_key: Optional[str] = None
+    cloud_model_name: Optional[str] = None
+
+
+class TestImageRequest(BaseModel):
+    image_path: str
+    prompt: Optional[str] = ""
+    strategy: Optional[str] = None
+    vision_model_name: Optional[str] = None
+
+
+@app.post("/api/media/test_voice")
+def test_voice_recognition(req: TestVoiceRequest):
+    """测试语音识别转写"""
+    try:
+        from agent_core.media_engine import VoiceRecognizer
+        from agent_core.config import VoiceConfig
+
+        cfg = config.voice.model_copy()
+        if req.engine:
+            cfg.engine = req.engine
+        if req.whisper_model:
+            cfg.whisper_model = req.whisper_model
+        if req.cloud_api_url is not None:
+            cfg.cloud_api_url = req.cloud_api_url
+        if req.cloud_api_key is not None:
+            cfg.cloud_api_key = req.cloud_api_key
+        if req.cloud_model_name:
+            cfg.cloud_model_name = req.cloud_model_name
+
+        recognizer = VoiceRecognizer(cfg)
+        audio_path = req.audio_path
+        if not audio_path or not os.path.exists(audio_path):
+            return {"success": False, "message": f"音频文件不存在: {audio_path}"}
+
+        ok, text, eng = recognizer.transcribe(audio_path)
+        return {
+            "success": ok,
+            "text": text,
+            "engine": eng,
+            "message": "识别完成" if ok else text
+        }
+    except Exception as e:
+        return {"success": False, "message": f"测试语音识别异常: {e}"}
+
+
+@app.post("/api/media/test_image")
+def test_image_recognition(req: TestImageRequest):
+    """测试图片多模态视觉或 OCR 识别"""
+    try:
+        if not req.image_path or not os.path.exists(req.image_path):
+            return {"success": False, "message": f"图片文件不存在: {req.image_path}"}
+
+        img_cfg = config.image.model_copy()
+        if req.strategy:
+            img_cfg.strategy = req.strategy
+        if req.vision_model_name:
+            img_cfg.vision_model_name = req.vision_model_name
+
+        from agent_core.media_engine import ImageEngine
+        engine = ImageEngine(img_cfg, config.llm)
+        res = engine.process_image(req.image_path, user_prompt=req.prompt or "")
+        return {
+            "success": res.get("success", False),
+            "strategy": res.get("strategy", "unknown"),
+            "direct_reply": res.get("direct_reply", ""),
+            "ocr_text": res.get("ocr_text", ""),
+            "error": res.get("error"),
+        }
+    except Exception as e:
+        return {"success": False, "message": f"测试图片识别异常: {e}"}
+
+
+@app.post("/api/utils/select_file")
+def select_file_dialog(file_type: str = "all"):
+    """打开系统原生弹窗选择本地测试文件"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    selected_file = ""
+
+    def _open_dialog():
+        nonlocal selected_file
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            if file_type == "audio":
+                types = [("Audio Files", "*.silk;*.wav;*.mp3;*.m4a;*.ogg;*.flac"), ("All Files", "*.*")]
+            elif file_type == "image":
+                types = [("Image Files", "*.jpg;*.jpeg;*.png;*.webp;*.bmp"), ("All Files", "*.*")]
+            else:
+                types = [("All Files", "*.*")]
+            file_path = filedialog.askopenfilename(title="请选择文件", filetypes=types)
+            root.destroy()
+            selected_file = file_path
+        except Exception as e:
+            print(f"弹窗选择文件异常: {e}")
+
+    t = threading.Thread(target=_open_dialog)
+    t.start()
+    t.join(timeout=60)
+
+    if selected_file:
+        norm_path = os.path.normpath(selected_file)
+        return {"success": True, "file_path": norm_path}
+    return {"success": False, "file_path": "", "message": "已取消选择"}
 
 
 @app.post("/api/utils/select_folder")

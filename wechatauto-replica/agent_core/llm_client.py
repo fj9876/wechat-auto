@@ -142,12 +142,13 @@ class LLMClient:
 
     def chat_completion(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """请求大模型生成回复 (支持可选的 Function Call / Tools)
+        """请求大模型生成回复 (支持多模态内容与可选的 Function Call / Tools)
 
         Returns:
             {
@@ -166,7 +167,7 @@ class LLMClient:
         }
 
         payload: Dict[str, Any] = {
-            "model": self.config.model_name or "deepseek-chat",
+            "model": (model_name or self.config.model_name or "deepseek-chat").strip(),
             "messages": messages,
             "temperature": temperature if temperature is not None else self.config.temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,

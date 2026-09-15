@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 
 from .config import AppConfig
 from .llm_client import LLMClient
+from .media_engine import ImageEngine
 from .rag_engine import RAGEngine
 from .tools import TOOL_DEFINITIONS, ToolExecutor
 
@@ -54,6 +56,7 @@ class AgentPipeline:
         self.config = config
         self.llm_client = llm_client
         self.rag_engine = rag_engine
+        self.image_engine = ImageEngine(config.image, config.llm)
         # 会话状态维护: chat_id -> {"history": list, "human_mode": bool, "last_reply_time": float}
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -61,6 +64,7 @@ class AgentPipeline:
         self.config = config
         self.llm_client.update_config(config.llm)
         self.rag_engine.update_config(config.rag, config.llm)
+        self.image_engine.update_config(config.image, config.llm)
 
     def _get_session(self, chat_id: str) -> Dict[str, Any]:
         if chat_id not in self.sessions:
@@ -79,6 +83,23 @@ class AgentPipeline:
                 "last_reply_time": 0.0,
             }
 
+    def _decorate_reply(self, reply_text: str, is_group: bool, sender_name: str) -> str:
+        """统一对回复内容应用长度截断、前缀、后缀以及群聊@提问者"""
+        reply = reply_text.strip()
+        max_len = getattr(self.config.safety, "max_reply_length", 0) or 0
+        if max_len > 0 and len(reply) > max_len:
+            reply = reply[:max_len] + "..."
+
+        if self.config.safety.reply_prefix:
+            reply = f"{self.config.safety.reply_prefix}{reply}"
+        if self.config.safety.reply_suffix:
+            reply = f"{reply}\n{self.config.safety.reply_suffix}"
+
+        if is_group and self.config.targets.group_auto_at_sender and sender_name:
+            if not reply.startswith(f"@{sender_name}"):
+                reply = f"@{sender_name}\u2005{reply}"
+        return reply
+
     def process(
         self,
         chat_id: str,
@@ -86,8 +107,10 @@ class AgentPipeline:
         content: str,
         is_group: bool = False,
         is_at_me: bool = False,
+        image_path: Optional[str] = None,
+        raw_msg_type: str = "文本",
     ) -> PipelineResult:
-        """运行完整智能体流水线"""
+        """运行完整智能体流水线 (支持文本、语音转写、多模态图片及OCR降级)"""
         start_ts = time.time()
         steps: List[PipelineStep] = []
         rag_hits: List[Dict[str, Any]] = []
@@ -97,11 +120,75 @@ class AgentPipeline:
         clean_content = content.strip()
 
         # Step 1: 消息采集与接管判定
+        msg_type_desc = f" [{raw_msg_type}]" if raw_msg_type != "文本" else ""
         steps.append(PipelineStep(
             name="1. 消息采集",
             status="success",
-            details=f"收到来自 [{sender_name}] 的消息: {clean_content} (群聊={is_group}, 被@={is_at_me})"
+            details=f"收到来自 [{sender_name}] 的{msg_type_desc}消息: {clean_content} (群聊={is_group}, 被@={is_at_me})"
         ))
+
+        # 语音消息记录
+        if raw_msg_type == "语音":
+            steps.append(PipelineStep(
+                name="语音识别 (ASR)",
+                status="success",
+                details=f"微信语音已成功转写为文本: {clean_content}"
+            ))
+
+        # 图片消息处理 (主流 Vision LLM + 备用 WinRT OCR 自动降级)
+        if image_path and os.path.exists(image_path):
+            img_res = self.image_engine.process_image(image_path, user_prompt=clean_content)
+            strat = img_res.get("strategy")
+            if strat == "vision":
+                v_reply = img_res.get("direct_reply", "")
+                final_reply = self._decorate_reply(v_reply, is_group, sender_name)
+                session["history"].append({"role": "user", "content": f"{sender_name}: [发送了一张图片] {clean_content}" if is_group else f"[发送了一张图片] {clean_content}"})
+                session["history"].append({"role": "assistant", "content": v_reply})
+                session["last_reply_time"] = time.time()
+                steps.append(PipelineStep(
+                    name="多模态视觉分析 (Vision LLM)",
+                    status="success",
+                    details=f"视觉大模型直接理解图片并生成回复: {v_reply[:60]}..."
+                ))
+                return PipelineResult(
+                    chat_id=chat_id,
+                    sender_name=sender_name,
+                    original_content=f"[图片] {clean_content}".strip(),
+                    reply_text=final_reply,
+                    should_send=True,
+                    is_group=is_group,
+                    is_at_me=is_at_me,
+                    steps=steps,
+                    duration_ms=(time.time() - start_ts) * 1000,
+                )
+            elif strat in ("ocr_fallback", "ocr_only"):
+                ocr_text = img_res.get("ocr_text", "")
+                tag = "Windows 原生 WinRT OCR 提字" if strat == "ocr_only" else "自动降级 -> WinRT OCR 文字提取"
+                steps.append(PipelineStep(
+                    name=tag,
+                    status="success",
+                    details=f"已从图片提取到文字 (共 {len(ocr_text)} 字): {ocr_text[:60]}..."
+                ))
+                clean_content = img_res.get("prompt_for_llm", clean_content)
+            else:
+                fallback_msg = img_res.get("direct_reply") or "已收到您发送的图片，但当前大模型不支持视觉理解且未在图片中检测到文字。"
+                steps.append(PipelineStep(
+                    name="图片识别",
+                    status="warning",
+                    details=img_res.get("error") or "未从图片中提取到有效信息"
+                ))
+                final_reply = self._decorate_reply(fallback_msg, is_group, sender_name)
+                return PipelineResult(
+                    chat_id=chat_id,
+                    sender_name=sender_name,
+                    original_content=f"[图片] {clean_content}".strip(),
+                    reply_text=final_reply,
+                    should_send=True,
+                    is_group=is_group,
+                    is_at_me=is_at_me,
+                    steps=steps,
+                    duration_ms=(time.time() - start_ts) * 1000,
+                )
 
         # 检查是否处于人工接管模式
         if session.get("human_mode", False):
@@ -371,22 +458,7 @@ class AgentPipeline:
                 final_content = second_res["content"]
 
         # Step 6: 组装最终回复与前缀后缀
-        reply = final_content.strip()
-
-        # 最大字数限制截断
-        max_len = getattr(self.config.safety, "max_reply_length", 0) or 0
-        if max_len > 0 and len(reply) > max_len:
-            reply = reply[:max_len] + "..."
-
-        if self.config.safety.reply_prefix:
-            reply = f"{self.config.safety.reply_prefix}{reply}"
-        if self.config.safety.reply_suffix:
-            reply = f"{reply}\n{self.config.safety.reply_suffix}"
-
-        # 若是群聊，且开启了自动@提问者，并且当前回复还没带@
-        if is_group and self.config.targets.group_auto_at_sender and sender_name:
-            if not reply.startswith(f"@{sender_name}"):
-                reply = f"@{sender_name}\u2005{reply}"
+        reply = self._decorate_reply(final_content, is_group, sender_name)
 
         # 记录会话历史 (只保留纯文本，方便多轮上下文)
         session["history"].append({"role": "user", "content": user_input_with_sender})
