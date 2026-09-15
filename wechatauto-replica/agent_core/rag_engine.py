@@ -32,17 +32,24 @@ class DocumentChunk:
 
 
 def tokenize_chinese(text: str) -> List[str]:
-    """轻量纯 Python 中英文分词器 (基于字符/双字符 N-gram 与英文分词，100% 便携可靠)"""
+    """轻量中英文分词器 (支持可选 jieba 增强，降级至纯 Python 字符/双字 Bi-gram 分词，100% 便携可靠)"""
     tokens = []
     # 提取英文和数字单词
     words = re.findall(r'[a-zA-Z0-9_\-\.]+', text.lower())
     tokens.extend(words)
 
-    # 提取中文字符串
+    # 尝试可选使用 jieba 分词
+    try:
+        import jieba
+        jb_words = [w.strip().lower() for w in jieba.cut(text) if w.strip() and not re.match(r'^[a-zA-Z0-9_\-\.]+$', w)]
+        tokens.extend(jb_words)
+    except Exception:
+        pass
+
+    # 提取中文字符串单字
     chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    # 单字
     tokens.extend(chinese_chars)
-    # 双字元 (Bi-gram) 提升医学术语与短语匹配准确率
+    # 双字元 (Bi-gram) 提升术语与短语匹配准确率
     clean_cn = re.sub(r'[^\u4e00-\u9fff]', ' ', text)
     for seg in clean_cn.split():
         if len(seg) >= 2:
@@ -143,13 +150,92 @@ class RAGEngine:
         if llm_config:
             self.llm_config = llm_config
 
+    def reload_config(self, rag_config: RAGConfig, llm_config: Optional[LLMConfig] = None) -> None:
+        """配置热重载 (兼容 update_config，若已配置知识库路径且未建立索引，尝试从缓存快速加载)"""
+        self.update_config(rag_config, llm_config)
+        if rag_config.kb_folder_path and os.path.isdir(rag_config.kb_folder_path) and not self.is_indexed:
+            try:
+                self.reindex(rag_config.kb_folder_path, force=False)
+            except Exception as e:
+                print(f"[RAG] 尝试自动加载缓存索引失败: {e}")
+
+    def _get_cache_path(self, target_folder: str) -> str:
+        """获取索引缓存文件路径"""
+        # 优先存放在知识库文件夹内 .rag_cache.json
+        cand = os.path.join(target_folder, ".rag_cache.json")
+        try:
+            # 探测可写性
+            test_file = os.path.join(target_folder, ".test_write_perm")
+            with open(test_file, "w") as f:
+                f.write("1")
+            os.remove(test_file)
+            return cand
+        except Exception:
+            pass
+
+        # 回退到应用本地 data/rag_cache.json
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "rag_cache.json")
+
+    def _load_from_cache(self, cache_file: str, files: List[Dict[str, Any]]) -> Optional[List[DocumentChunk]]:
+        """若文件未发生任何修改，从缓存秒级加载已切分并分词的 chunks"""
+        if not os.path.isfile(cache_file):
+            return None
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            cached_files_meta = data.get("files_meta", {})
+            current_files_meta = {
+                f["rel_path"]: {"size_bytes": f["size_bytes"], "mtime": f["mtime"]}
+                for f in files
+            }
+
+            if cached_files_meta != current_files_meta:
+                return None  # 文件内容或列表已变动，需要重新切分
+
+            raw_chunks = data.get("chunks", [])
+            chunks: List[DocumentChunk] = []
+            for item in raw_chunks:
+                chunks.append(DocumentChunk(
+                    chunk_id=item.get("chunk_id", ""),
+                    source_file=item.get("source_file", ""),
+                    file_name=item.get("file_name", ""),
+                    content=item.get("content", ""),
+                    tokens=item.get("tokens", []),
+                    meta=item.get("meta", {}),
+                ))
+            return chunks
+        except Exception:
+            return None
+
+    def _save_to_cache(self, cache_file: str, files: List[Dict[str, Any]], chunks: List[DocumentChunk]) -> None:
+        """保存分词和切片结果至本地持久化缓存"""
+        try:
+            files_meta = {
+                f["rel_path"]: {"size_bytes": f["size_bytes"], "mtime": f["mtime"]}
+                for f in files
+            }
+            chunks_data = [asdict(c) for c in chunks]
+            cache_payload = {
+                "version": "1.0",
+                "files_meta": files_meta,
+                "chunks": chunks_data,
+            }
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache_payload, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[RAG] 写入本地索引缓存失败: {e}")
+
     def _read_file_content(self, file_path: str) -> str:
         """解析不同类型的文件文本内容"""
         ext = os.path.splitext(file_path)[1].lower()
 
         # 1. 文本与 Markdown
         if ext in (".txt", ".md", ".log"):
-            for enc in ("utf-8", "gb18030", "gbk", "latin-1"):
+            for enc in ("utf-8-sig", "utf-8", "gb18030", "gbk", "latin-1"):
                 try:
                     with open(file_path, "r", encoding=enc) as f:
                         return f.read()
@@ -248,7 +334,7 @@ class RAGEngine:
         return chunks
 
     def scan_folder(self, folder_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        """扫描知识库文件夹中的所有文档"""
+        """扫描知识库文件夹中的所有文档 (自动忽略隐藏文件与隐藏文件夹)"""
         path = folder_path or self.rag_config.kb_folder_path
         if not path or not os.path.isdir(path):
             return []
@@ -256,8 +342,13 @@ class RAGEngine:
         supported_exts = {".txt", ".md", ".pdf", ".docx", ".csv", ".json"}
         files_info = []
 
-        for root, _, files in os.walk(path):
+        for root, dirs, files in os.walk(path):
+            # 忽略以 . 开头的隐藏目录 (例如 .git, .cache 等)
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for file in files:
+                # 忽略以 . 开头的隐藏文件与内部缓存 (例如 .rag_cache.json)
+                if file.startswith("."):
+                    continue
                 ext = os.path.splitext(file)[1].lower()
                 if ext in supported_exts:
                     full_path = os.path.join(root, file)
@@ -276,8 +367,8 @@ class RAGEngine:
                         pass
         return files_info
 
-    def reindex(self, folder_path: Optional[str] = None) -> Dict[str, Any]:
-        """重新扫描文件夹并重建 BM25 检索索引"""
+    def reindex(self, folder_path: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+        """重新扫描文件夹并重建 BM25 检索索引 (支持秒级本地缓存)"""
         import time
         target_folder = folder_path or self.rag_config.kb_folder_path
         if not target_folder:
@@ -288,13 +379,37 @@ class RAGEngine:
             return {"success": False, "message": f"目录不存在: {target_folder}", "doc_count": 0, "chunk_count": 0}
 
         files = self.scan_folder(target_folder)
-        all_chunks: List[DocumentChunk] = []
+        if not files:
+            self.chunks = []
+            self.bm25.fit([])
+            self.indexed_files = []
+            self.is_indexed = False
+            return {
+                "success": True,
+                "message": f"知识库目录为空或无有效格式文档（支持 .txt, .md, .pdf, .docx, .csv, .json）",
+                "doc_count": 0,
+                "chunk_count": 0,
+                "last_index_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
 
-        for file_info in files:
-            content = self._read_file_content(file_info["full_path"])
-            if content:
-                chunks = self._split_into_chunks(content, file_info["full_path"])
-                all_chunks.extend(chunks)
+        cache_path = self._get_cache_path(target_folder)
+        all_chunks: Optional[List[DocumentChunk]] = None
+
+        if not force:
+            all_chunks = self._load_from_cache(cache_path, files)
+
+        is_from_cache = False
+        if all_chunks is not None:
+            is_from_cache = True
+        else:
+            all_chunks = []
+            for file_info in files:
+                content = self._read_file_content(file_info["full_path"])
+                if content:
+                    chunks = self._split_into_chunks(content, file_info["full_path"])
+                    all_chunks.extend(chunks)
+            # 存入缓存
+            self._save_to_cache(cache_path, files, all_chunks)
 
         self.chunks = all_chunks
         self.bm25.fit(all_chunks)
@@ -302,25 +417,39 @@ class RAGEngine:
         self.is_indexed = True
         self.last_index_time = time.strftime("%Y-%m-%d %H:%M:%S")
 
+        cache_tip = " (已通过缓存高速加载)" if is_from_cache else ""
         return {
             "success": True,
-            "message": f"索引构建成功！共索引 {len(files)} 个文档，生成 {len(all_chunks)} 个切片",
+            "message": f"索引构建成功！共索引 {len(files)} 个文档，生成 {len(all_chunks)} 个切片{cache_tip}",
             "doc_count": len(files),
             "chunk_count": len(all_chunks),
             "last_index_time": self.last_index_time,
+            "from_cache": is_from_cache,
         }
 
-    def search(self, query: str, top_k: Optional[int] = None, threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        threshold: Optional[float] = None,
+        ignore_enabled_flag: bool = False
+    ) -> List[Dict[str, Any]]:
         """执行知识检索
 
+        Args:
+            query: 用户提问或搜索词
+            top_k: 最大返回条数
+            threshold: 相似度打分阈值 (0.0 ~ 1.0)
+            ignore_enabled_flag: 为 True 时忽略 rag_config.enabled 开关校验（用于在 GUI 中即时测试切片命中）
+
         Returns:
-            List of { "chunk_id", "file_name", "content", "score", "source_file" }
+            List of { "chunk_id", "file_name", "content", "text", "score", "source_file", "metadata" }
         """
-        if not self.rag_config.enabled or not self.is_indexed or not self.chunks:
+        if (not ignore_enabled_flag and not self.rag_config.enabled) or not self.is_indexed or not self.chunks:
             return []
 
         k = top_k or self.rag_config.top_k or 3
-        th = threshold or self.rag_config.similarity_threshold or 0.15
+        th = threshold if threshold is not None else (self.rag_config.similarity_threshold or 0.15)
 
         results = self.bm25.search(query, top_k=k)
         matched = []
@@ -331,7 +460,13 @@ class RAGEngine:
                     "file_name": chunk.file_name,
                     "source_file": chunk.source_file,
                     "content": chunk.content,
+                    "text": chunk.content,  # 兼容 text 别名
                     "score": round(score, 3),
+                    "metadata": {
+                        "source": chunk.file_name,
+                        "source_file": chunk.source_file,
+                        "chunk_id": chunk.chunk_id,
+                    }
                 })
         return matched
 

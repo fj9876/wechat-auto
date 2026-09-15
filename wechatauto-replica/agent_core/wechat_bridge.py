@@ -89,6 +89,8 @@ class WeChatBridge:
             from wechatauto.db import WeChatDB
             if self._db is None:
                 self._db = WeChatDB()
+                if hasattr(self.pipeline, "profile_engine"):
+                    self.pipeline.profile_engine.set_db(self._db)
             info = self._db.get_self_info()
             if info and info.get("username"):
                 wechat_detected = True
@@ -163,13 +165,18 @@ class WeChatBridge:
                         if u in SYSTEM_ACCOUNTS or u.startswith("gh_"):
                             continue
 
-                        disp_name = r["remark"] or r["nick_name"] or r["alias"] or u
+                        remark = (r["remark"] or "").strip()
+                        nick_name = (r["nick_name"] or "").strip()
+                        alias = (r["alias"] or "").strip()
+                        disp_name = remark or nick_name or alias or u
                         s_info = session_map.get(u)
 
                         item = {
                             "username": u,
                             "name": disp_name,
-                            "remark": r["remark"] or "",
+                            "remark": remark,
+                            "nick_name": nick_name,
+                            "alias": alias,
                             "is_group": False,
                             "summary": s_info.get("summary", "") if s_info else "",
                             "unread": s_info.get("unread", 0) if s_info else 0,
@@ -207,13 +214,16 @@ class WeChatBridge:
                             continue
                         seen_groups.add(u)
 
-                        disp_name = r["remark"] or r["nick_name"] or u
+                        remark = (r["remark"] or "").strip()
+                        nick_name = (r["nick_name"] or "").strip()
+                        disp_name = remark or nick_name or u
                         s_info = session_map.get(u)
 
                         g_item = {
                             "username": u,
                             "name": disp_name,
-                            "remark": "",
+                            "remark": remark,
+                            "nick_name": nick_name,
                             "is_group": True,
                             "summary": s_info.get("summary", "") if s_info else "",
                             "unread": s_info.get("unread", 0) if s_info else 0,
@@ -819,8 +829,15 @@ class WeChatBridge:
                 self._recent_incoming_queries.append((username, clean_query, time.time()))
 
             # -------------------------------------------------------------
-            # 4. 运行智能体全流程流水线 (LLM理解 -> RAG -> 工具调用 -> 回复生成)
+            # 4. 运行智能体全流程流水线 (LLM理解 -> RAG -> 用户画像与记忆 -> 工具调用 -> 回复生成)
             # -------------------------------------------------------------
+            # 判定联系人专属画像开关 (群聊默认全部关闭，需群设置显式开启；私聊根据私聊开关)
+            if is_group:
+                grp_cfg = self.config.get_group_config(username, group_name)
+                enable_profile = bool(grp_cfg.enable_member_profile)
+            else:
+                enable_profile = bool(self.config.profile.enable_private_chat)
+
             res: PipelineResult = self.pipeline.process(
                 chat_id=username,
                 sender_name=sender_name,
@@ -829,6 +846,8 @@ class WeChatBridge:
                 is_at_me=is_at_me,
                 image_path=detected_image_path,
                 raw_msg_type=raw_type,
+                sender_wxid=group_sender_wxid if is_group else username,
+                enable_profile=enable_profile,
             )
 
             # 广播完整流水线决策链路

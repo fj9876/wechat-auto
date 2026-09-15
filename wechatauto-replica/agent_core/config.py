@@ -145,7 +145,18 @@ class SingleGroupConfig(BaseModel):
         description="黑名单成员再次进群被自动踢出时的群内通报模板"
     )
     auto_kick_on_rejoin: bool = Field(default=True, description="是否开启黑名单复入自动秒踢")
+    enable_member_profile: bool = Field(default=False, description="是否启用本群群成员专属用户画像与永久记忆功能 (默认关闭，仅在开启的群生效)")
 
+
+
+class ProfileConfig(BaseModel):
+    """联系人用户画像与永久记忆配置"""
+    enabled: bool = Field(default=True, description="是否启用联系人用户画像与永久记忆功能总开关")
+    enable_private_chat: bool = Field(default=True, description="私聊好友是否默认启用画像功能")
+    storage_dir: str = Field(default="data/profiles", description="画像与永久记忆文件本地存储目录")
+    max_history_scan: int = Field(default=50, description="初次构建画像时扫描历史消息条数")
+    auto_refine: bool = Field(default=True, description="对话进行中是否自动增量自完善与修复画像")
+    inject_prompt: bool = Field(default=True, description="是否将联系人画像摘要注入大模型系统提示词")
 
 
 class VoiceConfig(BaseModel):
@@ -176,6 +187,7 @@ class AppConfig(BaseModel):
     targets: TargetFilterConfig = Field(default_factory=TargetFilterConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    profile: ProfileConfig = Field(default_factory=ProfileConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     image: ImageConfig = Field(default_factory=ImageConfig)
     groups_config: Dict[str, SingleGroupConfig] = Field(

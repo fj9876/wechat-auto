@@ -3,6 +3,7 @@
 from .config import AppConfig, global_config
 from .llm_client import LLMClient
 from .rag_engine import RAGEngine
+from .profile_engine import ProfileEngine, ContactProfile
 from .tools import TOOL_DEFINITIONS, ToolExecutor
 from .pipeline import AgentPipeline, PipelineResult
 from .wechat_bridge import WeChatBridge
@@ -12,6 +13,8 @@ __all__ = [
     "global_config",
     "LLMClient",
     "RAGEngine",
+    "ProfileEngine",
+    "ContactProfile",
     "TOOL_DEFINITIONS",
     "ToolExecutor",
     "AgentPipeline",

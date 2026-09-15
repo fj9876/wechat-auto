@@ -46,6 +46,7 @@ if BASE_DIR not in sys.path:
 from agent_core.config import AppConfig, PROMPT_PRESETS
 from agent_core.llm_client import LLMClient
 from agent_core.rag_engine import RAGEngine
+from agent_core.profile_engine import ProfileEngine, ContactProfile
 from agent_core.tools import ToolExecutor
 from agent_core.pipeline import AgentPipeline, PipelineResult
 from agent_core.wechat_bridge import WeChatBridge
@@ -64,9 +65,12 @@ class WeChatAIAgentApp:
         self.config = AppConfig.load()
         self.llm_client = LLMClient(self.config.llm)
         self.rag_engine = RAGEngine(self.config.rag)
+        self.profile_engine = ProfileEngine(self.config.profile, self.llm_client)
         self.tools = ToolExecutor
-        self.pipeline = AgentPipeline(self.config, self.llm_client, self.rag_engine)
+        self.pipeline = AgentPipeline(self.config, self.llm_client, self.rag_engine, self.profile_engine)
         self.bridge = WeChatBridge(self.config, self.pipeline)
+        if hasattr(self.bridge, "_db") and self.bridge._db:
+            self.profile_engine.set_db(self.bridge._db)
         self.presets: Dict[str, str] = self.config.safety.get_presets()
 
         # 线程安全事件队列
@@ -249,12 +253,13 @@ class WeChatAIAgentApp:
             fg="#cbd5e1"
         ).pack(side="left", padx=16, pady=11)
 
-        # 竖向菜单项定义 (依序排列 6 个主要功能)
+        # 竖向菜单项定义 (依序排列 7 个主要功能)
         self.nav_items = [
             ("dashboard", "📊  运行看板与实时日志"),
             ("targets",   "👥  回复对象配置"),
             ("llm",       "🧠  大模型配置"),
             ("rag",       "📚  本地知识库 (RAG)"),
+            ("profiles",  "👤  联系人画像与记忆"),
             ("media",     "🎙️  多模态与媒体设置"),
             ("sandbox",   "🧪  交互测试沙盒"),
         ]
@@ -309,7 +314,7 @@ class WeChatAIAgentApp:
         self.content_container = tk.Frame(self.main_container, bg=self.COLOR_BG)
         self.content_container.pack(side="right", fill="both", expand=True, padx=(8, 10), pady=(6, 8))
 
-        # 构建 6 个功能子面板容器 (完全保留原有各面板内部控件树与事件处理)
+        # 构建 7 个功能子面板容器 (完全保留原有各面板内部控件树与事件处理)
         self.tab_dashboard = ttk.Frame(self.content_container)
         self._build_dashboard_tab()
 
@@ -322,6 +327,9 @@ class WeChatAIAgentApp:
         self.tab_rag = ttk.Frame(self.content_container)
         self._build_rag_tab()
 
+        self.tab_profiles = ttk.Frame(self.content_container)
+        self._build_profiles_tab()
+
         self.tab_media = ttk.Frame(self.content_container)
         self._build_media_tab()
 
@@ -333,6 +341,7 @@ class WeChatAIAgentApp:
             "targets": self.tab_targets,
             "llm": self.tab_llm,
             "rag": self.tab_rag,
+            "profiles": self.tab_profiles,
             "media": self.tab_media,
             "sandbox": self.tab_sandbox,
         }
@@ -1379,6 +1388,39 @@ class WeChatAIAgentApp:
         tk.Label(card4, text="支持变量: {target} 为进群被踢者名称；留空则静默秒踢", font=("Microsoft YaHei UI", 8), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(anchor="w")
 
         # ---------------------------------------------------------------------
+        # 卡片 5: 群成员专属用户画像与永久记忆开关 (默认全部关闭，需自定义开启)
+        # ---------------------------------------------------------------------
+        card5 = tk.Frame(content_frame, bg=self.COLOR_CARD, padx=16, pady=12, relief="solid", bd=1)
+        card5.pack(fill="x", padx=16, pady=(8, 16))
+
+        lbl_c5_title = tk.Label(
+            card5,
+            text="👤 群成员专属用户画像与永久记忆设置",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=self.COLOR_CARD,
+            fg=self.COLOR_HEADER
+        )
+        lbl_c5_title.pack(anchor="w")
+
+        var_enable_member_profile = tk.BooleanVar(value=getattr(g_cfg, "enable_member_profile", False))
+        chk_member_profile = tk.Checkbutton(
+            card5,
+            text="启用本群群成员专属画像与永久记忆 (默认关闭)",
+            variable=var_enable_member_profile,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=self.COLOR_PRIMARY
+        )
+        chk_member_profile.pack(anchor="w", pady=(8, 2))
+        tk.Label(
+            card5,
+            text="提示: 开启后，AI将根据每位群成员历史发言建立独立档案，持续自完善并在回复时注入记忆；默认关闭以节省Token和算力。",
+            font=("Microsoft YaHei UI", 8),
+            bg=self.COLOR_CARD,
+            fg=self.COLOR_MUTED
+        ).pack(anchor="w")
+
+        # ---------------------------------------------------------------------
         # 底部操作按钮
         # ---------------------------------------------------------------------
         def do_save():
@@ -1389,6 +1431,7 @@ class WeChatAIAgentApp:
             g_cfg.kick_notice_template = var_kick_tpl.get().strip()
             g_cfg.rejoin_kick_template = var_rejoin_tpl.get().strip()
             g_cfg.auto_kick_on_rejoin = var_auto_kick.get()
+            g_cfg.enable_member_profile = var_enable_member_profile.get()
 
             self.config.groups_config[chatroom_id] = g_cfg
             self.config.save()
@@ -1401,7 +1444,8 @@ class WeChatAIAgentApp:
                 f"群聊【{group_name}】专属管理配置已保存生效！\n\n"
                 f"• 管理者(Master): {len(g_cfg.masters)} 人\n"
                 f"• 永久黑名单: {len(g_cfg.blacklist)} 人\n"
-                f"• 微信踢人权限: {'已启用' if g_cfg.is_admin_or_owner else '未启用'}",
+                f"• 微信踢人权限: {'已启用' if g_cfg.is_admin_or_owner else '未启用'}\n"
+                f"• 群成员专属画像: {'已启用' if g_cfg.enable_member_profile else '已关闭'}",
                 parent=dlg
             )
             dlg.destroy()
@@ -2185,18 +2229,27 @@ class WeChatAIAgentApp:
             try:
                 self.config.rag.kb_folder_path = folder
                 self.config.rag.enabled = True
-                self.rag_engine.reload_config(self.config.rag)
-                docs_count = len(self.rag_engine.chunks)
+                res = self.rag_engine.reindex(folder, force=True)
+                if not res.get("success", False):
+                    raise RuntimeError(res.get("message", "构建索引失败"))
+
+                # 保存配置
+                self.config.save()
+                doc_cnt = res.get("doc_count", 0)
+                chunk_cnt = res.get("chunk_count", 0)
+
                 def on_done():
+                    self.var_rag_enabled.set(True)
                     self.btn_build_index.configure(text="⚡ 建立/更新本地索引", state="normal")
-                    self.lbl_rag_status.configure(text=f"✅ 索引就绪：共 {docs_count} 个切片片段", fg=self.COLOR_SUCCESS)
-                    messagebox.showinfo("成功", f"知识库索引构建完成！\n共切分为 {docs_count} 个知识切片。")
+                    self.lbl_rag_status.configure(text=f"✅ 索引就绪：共 {doc_cnt} 个文档，{chunk_cnt} 个切片片段", fg=self.COLOR_SUCCESS)
+                    messagebox.showinfo("构建完成", f"知识库索引构建成功！\n\n- 文档数: {doc_cnt}\n- 知识切片数: {chunk_cnt}\n- 知识库已自动开启，将在自动回复时生效。")
                 self.dispatch_ui(on_done)
             except Exception as e:
+                err_msg = str(e)
                 def on_err():
                     self.btn_build_index.configure(text="⚡ 建立/更新本地索引", state="normal")
-                    self.lbl_rag_status.configure(text=f"❌ 构建失败: {e}", fg=self.COLOR_DANGER)
-                    messagebox.showerror("构建失败", f"构建本地索引出现异常:\n{e}")
+                    self.lbl_rag_status.configure(text=f"❌ 构建失败: {err_msg[:40]}", fg=self.COLOR_DANGER)
+                    messagebox.showerror("构建失败", f"构建本地知识库索引出现异常:\n{err_msg}")
                 self.dispatch_ui(on_err)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2207,25 +2260,753 @@ class WeChatAIAgentApp:
             messagebox.showwarning("提示", "请输入测试查询语句！")
             return
 
-        hits = self.rag_engine.search(query, top_k=3)
+        if not self.rag_engine.is_indexed:
+            self.txt_rag_results.delete("1.0", "end")
+            self.txt_rag_results.insert("1.0", "⚠️ 当前知识库尚未建立索引！\n请先在上方点击【⚡ 建立/更新本地索引】后再进行检索测试。")
+            return
+
+        hits = self.rag_engine.search(query, top_k=3, ignore_enabled_flag=True)
         self.txt_rag_results.delete("1.0", "end")
         if not hits:
-            self.txt_rag_results.insert("1.0", "未检索到匹配的知识库切片（可能相似度低于阈值或未建立索引）。")
+            self.txt_rag_results.insert("1.0", "未检索到匹配的知识库切片（可能相似度低于阈值，或知识库中无相关内容）。\n建议尝试更换更精准的关键词。")
         else:
             out_lines = []
             for i, h in enumerate(hits, 1):
-                out_lines.append(f"【命中 {i}】相似度分数: {round(h.get('score', 0), 3)} | 来源: {h.get('metadata', {}).get('source', '未知')}\n{h.get('text', '')}\n")
+                score = h.get("score", 0.0)
+                fname = h.get("file_name") or h.get("metadata", {}).get("source", "未知文档")
+                content = h.get("content") or h.get("text", "")
+                out_lines.append(f"【命中 {i}】相似度: {score} | 来源文档: 《{fname}》\n--------------------------------------------------\n{content.strip()}\n")
             self.txt_rag_results.insert("1.0", "\n".join(out_lines))
 
     def _on_save_rag_click(self):
         self.config.rag.enabled = self.var_rag_enabled.get()
-        self.config.rag.kb_folder_path = self.var_rag_path.get().strip()
+        new_path = self.var_rag_path.get().strip()
+        path_changed = (new_path != (self.config.rag.kb_folder_path or ""))
+        self.config.rag.kb_folder_path = new_path
         self.config.save()
         self.rag_engine.reload_config(self.config.rag)
+        if path_changed and new_path and os.path.isdir(new_path):
+            if messagebox.askyesno("知识库路径已更改", "检测到知识库文件夹路径已更新，是否立即重新构建本地索引？"):
+                self._on_build_rag_index_click()
+                return
         messagebox.showinfo("成功", "本地 RAG 知识库配置已成功保存！")
 
     # -------------------------------------------------------------------------
-    # Tab 5: 多模态与媒体设置 (Multimodal & Media Settings)
+    # Tab: 联系人专属画像与永久记忆 (Contact Profiles & Long-term Memory)
+    # -------------------------------------------------------------------------
+    def _build_profiles_tab(self):
+        parent = self.tab_profiles
+
+        # 1. 顶部全局配置栏
+        card_cfg = tk.Frame(parent, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card_cfg.pack(fill="x", padx=16, pady=(10, 6))
+
+        top_header = tk.Frame(card_cfg, bg=self.COLOR_CARD)
+        top_header.pack(fill="x", padx=14, pady=(8, 4))
+
+        tk.Label(
+            top_header,
+            text="👤 联系人专属用户画像与永久记忆库 (Memory Engine)",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=self.COLOR_CARD,
+            fg=self.COLOR_TEXT
+        ).pack(side="left")
+
+        btn_save_pcfg = tk.Button(
+            top_header,
+            text="💾 保存画像全局配置",
+            command=self._on_save_profile_global_config,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=3,
+            cursor="hand2"
+        )
+        btn_save_pcfg.pack(side="right")
+
+        f_switches = tk.Frame(card_cfg, bg=self.COLOR_CARD)
+        f_switches.pack(fill="x", padx=14, pady=(2, 8))
+
+        self.var_profile_enabled = tk.BooleanVar(value=self.config.profile.enabled)
+        chk_p_en = tk.Checkbutton(
+            f_switches,
+            text="启用联系人画像总开关",
+            variable=self.var_profile_enabled,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=self.COLOR_TEXT
+        )
+        chk_p_en.pack(side="left", padx=(0, 16))
+
+        self.var_profile_private = tk.BooleanVar(value=self.config.profile.enable_private_chat)
+        chk_p_priv = tk.Checkbutton(
+            f_switches,
+            text="私聊好友自动启用画像",
+            variable=self.var_profile_private,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9),
+            fg=self.COLOR_TEXT
+        )
+        chk_p_priv.pack(side="left", padx=(0, 16))
+
+        self.var_profile_auto_refine = tk.BooleanVar(value=self.config.profile.auto_refine)
+        chk_p_refine = tk.Checkbutton(
+            f_switches,
+            text="对话中自动增量自完善/纠偏",
+            variable=self.var_profile_auto_refine,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9),
+            fg=self.COLOR_TEXT
+        )
+        chk_p_refine.pack(side="left", padx=(0, 16))
+
+        self.var_profile_inject = tk.BooleanVar(value=self.config.profile.inject_prompt)
+        chk_p_inj = tk.Checkbutton(
+            f_switches,
+            text="将记忆摘要注入大模型Prompt",
+            variable=self.var_profile_inject,
+            bg=self.COLOR_CARD,
+            font=("Microsoft YaHei UI", 9),
+            fg=self.COLOR_TEXT
+        )
+        chk_p_inj.pack(side="left")
+
+        # 提示语
+        tk.Label(
+            card_cfg,
+            text="💡 说明: 群聊成员画像默认全部关闭，请在「👥 回复对象配置」中选中群聊并在专属设置中按需开启。",
+            font=("Microsoft YaHei UI", 8),
+            bg=self.COLOR_CARD,
+            fg=self.COLOR_MUTED
+        ).pack(anchor="w", padx=14, pady=(0, 6))
+
+        # 2. 下方主双栏容器 (左侧搜索与列表，右侧立体画像卡片)
+        main_body = tk.Frame(parent, bg=self.COLOR_BG)
+        main_body.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+
+        # -------------------- 左栏: 联系人搜索与选择列表 --------------------
+        left_panel = tk.Frame(main_body, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1, width=350)
+        left_panel.pack(side="left", fill="y", padx=(0, 8))
+        left_panel.pack_propagate(False)
+
+        # 搜索过滤条
+        f_p_search = tk.Frame(left_panel, bg=self.COLOR_CARD)
+        f_p_search.pack(fill="x", padx=10, pady=(10, 6))
+
+        self.var_profile_search = tk.StringVar()
+        self.var_profile_search.trace_add("write", self._on_profile_search_change)
+        ent_p_search = ttk.Entry(f_p_search, textvariable=self.var_profile_search, font=("Microsoft YaHei UI", 9))
+        ent_p_search.pack(fill="x")
+
+        # 类别筛选标签
+        f_p_filter = tk.Frame(left_panel, bg=self.COLOR_CARD)
+        f_p_filter.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.var_profile_filter_type = tk.StringVar(value="all")
+        for val, label in [("all", "全部"), ("profiles", "已建档"), ("private", "私聊"), ("group", "群成员")]:
+            rb = tk.Radiobutton(
+                f_p_filter,
+                text=label,
+                variable=self.var_profile_filter_type,
+                value=val,
+                command=self._load_profiles_into_tree,
+                bg=self.COLOR_CARD,
+                font=("Microsoft YaHei UI", 8),
+                activebackground=self.COLOR_CARD
+            )
+            rb.pack(side="left", padx=2)
+
+        # Treeview 表格
+        tree_scroll = ttk.Scrollbar(left_panel)
+        tree_scroll.pack(side="right", fill="y")
+
+        self.tree_profiles = ttk.Treeview(
+            left_panel,
+            columns=("name", "type", "identity", "facts"),
+            show="headings",
+            selectmode="browse",
+            yscrollcommand=tree_scroll.set
+        )
+        tree_scroll.config(command=self.tree_profiles.yview)
+
+        self.tree_profiles.heading("name", text="姓名/实体")
+        self.tree_profiles.heading("type", text="类别")
+        self.tree_profiles.heading("identity", text="身份定位")
+        self.tree_profiles.heading("facts", text="记忆数")
+
+        self.tree_profiles.column("name", width=145, anchor="w")
+        self.tree_profiles.column("type", width=50, anchor="center")
+        self.tree_profiles.column("identity", width=95, anchor="w")
+        self.tree_profiles.column("facts", width=55, anchor="center")
+
+        self.tree_profiles.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.tree_profiles.bind("<<TreeviewSelect>>", self._on_profile_tree_select)
+
+        # 底部操作栏
+        f_p_bops = tk.Frame(left_panel, bg=self.COLOR_CARD)
+        f_p_bops.pack(fill="x", padx=10, pady=8)
+
+        ttk.Button(f_p_bops, text="🔄 刷新列表", command=self._load_profiles_into_tree).pack(side="left", padx=(0, 6))
+        ttk.Button(f_p_bops, text="➕ 手动建档", command=self._on_manual_create_profile).pack(side="left")
+
+        # -------------------- 右栏: 立体画像详情卡片 --------------------
+        self.right_profile_panel = tk.Frame(main_body, bg=self.COLOR_BG)
+        self.right_profile_panel.pack(side="right", fill="both", expand=True)
+
+        # 空白未选提示
+        self.p_empty_tip = tk.Frame(self.right_profile_panel, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        self.p_empty_tip.pack(fill="both", expand=True)
+
+        tk.Label(
+            self.p_empty_tip,
+            text="👈 请从左侧列表中选择或搜索联系人\n\n以查看、编辑该对象的专属立体画像、永久事实记忆与自完善历史",
+            font=("Microsoft YaHei UI", 11),
+            bg=self.COLOR_CARD,
+            fg=self.COLOR_MUTED,
+            justify="center"
+        ).pack(expand=True)
+
+        # 详情卡片主容器 (可垂直滚动)
+        self.p_detail_frame = tk.Frame(self.right_profile_panel, bg=self.COLOR_BG)
+
+        p_canvas = tk.Canvas(self.p_detail_frame, bg=self.COLOR_BG, highlightthickness=0)
+        p_scroll = ttk.Scrollbar(self.p_detail_frame, orient="vertical", command=p_canvas.yview)
+        self.p_scroll_content = tk.Frame(p_canvas, bg=self.COLOR_BG)
+
+        self.p_scroll_content.bind(
+            "<Configure>",
+            lambda e: p_canvas.configure(scrollregion=p_canvas.bbox("all"))
+        )
+        p_canvas_win = p_canvas.create_window((0, 0), window=self.p_scroll_content, anchor="nw")
+        p_canvas.bind("<Configure>", lambda e: p_canvas.itemconfig(p_canvas_win, width=e.width))
+        p_canvas.configure(yscrollcommand=p_scroll.set)
+
+        p_canvas.pack(side="left", fill="both", expand=True)
+        p_scroll.pack(side="right", fill="y")
+
+        # 当前选中的联系人数据缓存
+        self.current_selected_person_id = ""
+        self.current_selected_profile: Optional[ContactProfile] = None
+
+        # 构造右侧画像各卡片控件
+        self._build_profile_card_widgets(self.p_scroll_content)
+
+        # 初始加载树
+        self.root.after(200, self._load_profiles_into_tree)
+
+    def _build_profile_card_widgets(self, parent: tk.Frame):
+        """构建右侧画像卡片的内部控件"""
+        # 卡片 1: 顶部 Header 与操作栏
+        card1 = tk.Frame(parent, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card1.pack(fill="x", pady=(0, 8))
+
+        f_hdr = tk.Frame(card1, bg=self.COLOR_CARD)
+        f_hdr.pack(fill="x", padx=16, pady=10)
+
+        self.lbl_p_avatar = tk.Label(f_hdr, text="👤", font=("Microsoft YaHei UI", 26), bg="#e0f2fe", fg=self.COLOR_PRIMARY, width=3)
+        self.lbl_p_avatar.pack(side="left", padx=(0, 12))
+
+        f_hdr_txt = tk.Frame(f_hdr, bg=self.COLOR_CARD)
+        f_hdr_txt.pack(side="left", fill="x", expand=True)
+
+        self.lbl_p_name = tk.Label(f_hdr_txt, text="联系人姓名", font=("Microsoft YaHei UI", 13, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT)
+        self.lbl_p_name.pack(anchor="w")
+
+        self.lbl_p_meta = tk.Label(f_hdr_txt, text="实体ID: xxx | 类型: 私聊 | 互动: 0次", font=("Microsoft YaHei UI", 8), bg=self.COLOR_CARD, fg=self.COLOR_MUTED)
+        self.lbl_p_meta.pack(anchor="w", pady=(2, 0))
+
+        # 按钮栏
+        f_actions = tk.Frame(card1, bg=self.COLOR_CARD)
+        f_actions.pack(fill="x", padx=16, pady=(0, 10))
+
+        self.btn_p_rebuild = tk.Button(
+            f_actions,
+            text="🔍 基于已有聊天记录分析/重建画像",
+            command=self._on_rebuild_selected_profile,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.COLOR_PRIMARY,
+            fg="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2"
+        )
+        self.btn_p_rebuild.pack(side="left", padx=(0, 8))
+
+        btn_p_save = tk.Button(
+            f_actions,
+            text="💾 保存手动调整",
+            command=self._on_save_selected_profile,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#10b981",
+            fg="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2"
+        )
+        btn_p_save.pack(side="left", padx=(0, 8))
+
+        btn_p_del = tk.Button(
+            f_actions,
+            text="🗑️ 清除该画像记忆",
+            command=self._on_delete_selected_profile,
+            font=("Microsoft YaHei UI", 9),
+            bg="#fee2e2",
+            fg="#ef4444",
+            relief="flat",
+            padx=10,
+            pady=5,
+            cursor="hand2"
+        )
+        btn_p_del.pack(side="right")
+
+        # 卡片 2: 多维立体属性表单
+        card2 = tk.Frame(parent, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card2.pack(fill="x", pady=(0, 8))
+
+        tk.Label(card2, text="📋 核心属性与偏好画像", font=("Microsoft YaHei UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="w", padx=16, pady=(10, 6))
+
+        f_grid = tk.Frame(card2, bg=self.COLOR_CARD)
+        f_grid.pack(fill="x", padx=16, pady=(0, 12))
+
+        # 身份属性
+        tk.Label(f_grid, text="身份定位:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=4)
+        self.var_p_identity = tk.StringVar()
+        ent_p_id = ttk.Entry(f_grid, textvariable=self.var_p_identity, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_id.grid(row=0, column=1, sticky="ew", padx=(8, 20), pady=4)
+
+        # 标签
+        tk.Label(f_grid, text="标签 (逗号隔开):", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=2, sticky="w", pady=4)
+        self.var_p_tags = tk.StringVar()
+        ent_p_tags = ttk.Entry(f_grid, textvariable=self.var_p_tags, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_tags.grid(row=0, column=3, sticky="ew", padx=(8, 0), pady=4)
+
+        # 性格特质
+        tk.Label(f_grid, text="性格特点:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=1, column=0, sticky="w", pady=4)
+        self.var_p_personality = tk.StringVar()
+        ent_p_pers = ttk.Entry(f_grid, textvariable=self.var_p_personality, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_pers.grid(row=1, column=1, sticky="ew", padx=(8, 20), pady=4)
+
+        # 沟通偏好
+        tk.Label(f_grid, text="沟通风格偏好:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=1, column=2, sticky="w", pady=4)
+        self.var_p_comm_style = tk.StringVar()
+        ent_p_comm = ttk.Entry(f_grid, textvariable=self.var_p_comm_style, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_comm.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=4)
+
+        # 兴趣业务
+        tk.Label(f_grid, text="业务/兴趣关注:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=2, column=0, sticky="w", pady=4)
+        self.var_p_interests = tk.StringVar()
+        ent_p_int = ttk.Entry(f_grid, textvariable=self.var_p_interests, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_int.grid(row=2, column=1, sticky="ew", padx=(8, 20), pady=4)
+
+        # 当前核心事项
+        tk.Label(f_grid, text="当前核心事项:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=2, column=2, sticky="w", pady=4)
+        self.var_p_focus = tk.StringVar()
+        ent_p_foc = ttk.Entry(f_grid, textvariable=self.var_p_focus, font=("Microsoft YaHei UI", 9), width=35)
+        ent_p_foc.grid(row=2, column=3, sticky="ew", padx=(8, 0), pady=4)
+
+        f_grid.columnconfigure(1, weight=1)
+        f_grid.columnconfigure(3, weight=1)
+
+        # 卡片 3: 关键事实永久记忆清单 (Fact Memories)
+        card3 = tk.Frame(parent, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card3.pack(fill="x", pady=(0, 8))
+
+        f_c3_top = tk.Frame(card3, bg=self.COLOR_CARD)
+        f_c3_top.pack(fill="x", padx=16, pady=(10, 4))
+
+        tk.Label(f_c3_top, text="📌 关键事实永久记忆清单 (Fact Memories)", font=("Microsoft YaHei UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(side="left")
+        tk.Label(f_c3_top, text="(大模型在每次交互时将优先调取这些关键背景)", font=("Microsoft YaHei UI", 8), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(side="left", padx=8)
+
+        # 记忆条目展示区
+        self.f_facts_container = tk.Frame(card3, bg=self.COLOR_CARD)
+        self.f_facts_container.pack(fill="x", padx=16, pady=(0, 8))
+
+        # 手工追加事实输入条
+        f_add_fact = tk.Frame(card3, bg=self.COLOR_CARD)
+        f_add_fact.pack(fill="x", padx=16, pady=(0, 12))
+
+        self.var_new_fact = tk.StringVar()
+        ent_new_fact = ttk.Entry(f_add_fact, textvariable=self.var_new_fact, font=("Microsoft YaHei UI", 9))
+        ent_new_fact.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        btn_add_fact = tk.Button(
+            f_add_fact,
+            text="➕ 添加一条记忆事实",
+            command=self._on_add_single_fact,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg=self.COLOR_TEXT,
+            relief="solid",
+            bd=1,
+            padx=10,
+            pady=3,
+            cursor="hand2"
+        )
+        btn_add_fact.pack(side="left")
+
+        # 卡片 4: 自完善与历史纠偏记录
+        card4 = tk.Frame(parent, bg=self.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.COLOR_BORDER, highlightthickness=1)
+        card4.pack(fill="x", pady=(0, 8))
+
+        tk.Label(card4, text="🔄 AI自完善与纠偏演进记录", font=("Microsoft YaHei UI", 10, "bold"), bg=self.COLOR_CARD, fg=self.COLOR_TEXT).pack(anchor="w", padx=16, pady=(10, 4))
+
+        self.txt_p_refinements = scrolledtext.ScrolledText(card4, wrap="word", height=4, font=("Microsoft YaHei UI", 8), bd=1, relief="solid")
+        self.txt_p_refinements.pack(fill="x", padx=16, pady=(0, 12))
+
+    def _on_save_profile_global_config(self):
+        """保存全局用户画像配置"""
+        self.config.profile.enabled = self.var_profile_enabled.get()
+        self.config.profile.enable_private_chat = self.var_profile_private.get()
+        self.config.profile.auto_refine = self.var_profile_auto_refine.get()
+        self.config.profile.inject_prompt = self.var_profile_inject.get()
+        self.config.save()
+        self.profile_engine.update_config(self.config.profile, self.llm_client)
+        messagebox.showinfo("成功", "联系人用户画像全局配置已保存生效！")
+
+    def _resolve_contact_display_name(self, person_id: str, default_name: str = "") -> str:
+        """解析联系人显示名称（严格遵循微信规则：有备注的显示备注，无备注的显示其本身的昵称）"""
+        if not person_id:
+            return default_name or ""
+
+        target_wxid = person_id.split(":")[-1] if person_id.startswith("group_member:") else person_id
+
+        # 1. 优先从内存通讯录 all_contacts 查询
+        if hasattr(self, "all_contacts") and self.all_contacts:
+            for c in self.all_contacts:
+                if c.get("username") == target_wxid:
+                    remark = (c.get("remark") or "").strip()
+                    nick = (c.get("nick_name") or "").strip() or (c.get("name") or "").strip()
+                    if remark:
+                        return remark
+                    if nick and not nick.startswith("wxid_"):
+                        return nick
+
+        # 2. 如果是群聊或在 all_groups 中
+        if hasattr(self, "all_groups") and self.all_groups:
+            for g in self.all_groups:
+                if g.get("username") == target_wxid:
+                    remark = (g.get("remark") or "").strip()
+                    nick = (g.get("nick_name") or "").strip() or (g.get("name") or "").strip()
+                    if remark:
+                        return remark
+                    if nick:
+                        return nick
+
+        # 3. 从本地微信 SQLite 数据库 contact 表查询
+        if hasattr(self, "bridge") and self.bridge and getattr(self.bridge, "_db", None):
+            try:
+                conn = self.bridge._db._contact_conn()
+                if conn:
+                    row = conn.execute(
+                        "SELECT nick_name, remark FROM contact WHERE username=? LIMIT 1",
+                        (target_wxid,),
+                    ).fetchone()
+                    if row:
+                        remark = (row["remark"] or "").strip()
+                        nick = (row["nick_name"] or "").strip()
+                        if remark:
+                            return remark
+                        if nick and not nick.startswith("wxid_"):
+                            return nick
+            except Exception:
+                pass
+
+        # 4. 兜底回退
+        if default_name and not default_name.startswith("wxid_") and default_name != person_id:
+            return default_name
+
+        return target_wxid
+
+    def _load_profiles_into_tree(self):
+        """加载联系人画像列表到左侧 Treeview"""
+        filter_type = self.var_profile_filter_type.get()
+        kw = self.var_profile_search.get().strip().lower()
+
+        self.tree_profiles.delete(*self.tree_profiles.get_children())
+
+        # 1. 获取所有已建档的 profiles
+        persisted = self.profile_engine.list_profiles()
+        persisted_map = {p["person_id"]: p for p in persisted}
+
+        # 2. 获取通讯录联系人 (私聊好友)
+        all_items = []
+        seen_ids = set()
+
+        # 优先放入已建档的实体
+        for p in persisted:
+            pid = p["person_id"]
+            seen_ids.add(pid)
+            # 有备注的显示备注，无备注的显示其本身的昵称
+            resolved_name = self._resolve_contact_display_name(pid, default_name=p.get("remark") or p.get("name") or pid)
+            all_items.append({
+                "person_id": pid,
+                "name": resolved_name,
+                "type": "群成员" if p.get("chat_type") == "group" else "私聊",
+                "identity": p.get("identity") or "微信联系人",
+                "facts": p.get("facts_count", 0),
+                "is_profiled": True,
+            })
+
+        # 其次放入通讯录中的私聊联系人 (未建档)
+        if hasattr(self, "all_contacts") and self.all_contacts:
+            for c in self.all_contacts:
+                u = c.get("username") or ""
+                if not u or u in seen_ids or u.endswith("@chatroom") or u.startswith("gh_"):
+                    continue
+                # 有备注的显示备注，无备注的显示其本身的昵称
+                disp_name = self._resolve_contact_display_name(
+                    u,
+                    default_name=c.get("remark") or c.get("nick_name") or c.get("name") or u
+                )
+                all_items.append({
+                    "person_id": u,
+                    "name": disp_name,
+                    "type": "私聊",
+                    "identity": "未建档",
+                    "facts": 0,
+                    "is_profiled": False,
+                })
+
+        # 过滤筛选
+        for item in all_items:
+            # 类型过滤
+            if filter_type == "profiles" and not item["is_profiled"]:
+                continue
+            if filter_type == "private" and item["type"] != "私聊":
+                continue
+            if filter_type == "group" and item["type"] != "群成员":
+                continue
+
+            # 关键字搜索
+            if kw:
+                haystack = f"{item['name']} {item['person_id']} {item['identity']}".lower()
+                if kw not in haystack:
+                    continue
+
+            self.tree_profiles.insert(
+                "",
+                "end",
+                iid=item["person_id"],
+                values=(item["name"], item["type"], item["identity"], str(item["facts"]))
+            )
+
+    def _on_profile_search_change(self, *args):
+        self._load_profiles_into_tree()
+
+    def _on_profile_tree_select(self, event):
+        """选中左侧树项目，展示右侧画像卡片"""
+        selected = self.tree_profiles.selection()
+        if not selected:
+            return
+
+        person_id = selected[0]
+        self.current_selected_person_id = person_id
+
+        # 切换右侧展示容器
+        self.p_empty_tip.pack_forget()
+        self.p_detail_frame.pack(fill="both", expand=True)
+
+        profile = self.profile_engine.load_profile(person_id)
+        if not profile:
+            # 尚未建档，生成雏形（严格遵循微信命名规则）
+            disp_name = self._resolve_contact_display_name(person_id)
+            profile = ContactProfile(
+                person_id=person_id,
+                name=disp_name,
+                chat_type="group" if person_id.startswith("group_member:") else "private",
+                identity="尚未分析",
+                tags=["未建档"],
+                personality="待分析",
+                communication_style="待分析",
+                current_focus="",
+                facts=[],
+                refinements=[]
+            )
+        else:
+            # 若已有 profile 缺少规范名称，自动补全最新备注或昵称
+            if not profile.name or profile.name == person_id or profile.name.startswith("wxid_"):
+                profile.name = self._resolve_contact_display_name(person_id, default_name=profile.name)
+
+        self.current_selected_profile = profile
+        self._render_profile_details(profile)
+
+    def _render_profile_details(self, profile: ContactProfile):
+        """将 profile 填入右侧各表单与记忆列表"""
+        type_str = "群成员" if profile.chat_type == "group" else "私聊好友"
+        disp_name = self._resolve_contact_display_name(profile.person_id, default_name=profile.name or profile.person_id)
+        self.lbl_p_name.configure(text=disp_name)
+        self.lbl_p_meta.configure(text=f"实体ID: {profile.person_id} | 类型: {type_str} | 累计互动: {profile.interaction_count}次 | 最近更新: {profile.updated_at or '未建立'}")
+
+        self.var_p_identity.set(profile.identity)
+        self.var_p_tags.set(", ".join(profile.tags))
+        self.var_p_personality.set(profile.personality)
+        self.var_p_comm_style.set(profile.communication_style)
+        self.var_p_interests.set(", ".join(profile.interests))
+        self.var_p_focus.set(profile.current_focus)
+
+        # 渲染事实清单
+        for widget in self.f_facts_container.winfo_children():
+            widget.destroy()
+
+        if not profile.facts:
+            tk.Label(self.f_facts_container, text="暂无确切事实记忆 (可在下方输入添加，或点击上方按钮基于历史记录分析)", font=("Microsoft YaHei UI", 8), bg=self.COLOR_CARD, fg=self.COLOR_MUTED).pack(anchor="w", pady=4)
+        else:
+            for idx, fact_item in enumerate(profile.facts):
+                row = tk.Frame(self.f_facts_container, bg=self.COLOR_CARD)
+                row.pack(fill="x", pady=2)
+
+                tk.Label(row, text=f"• {fact_item}", font=("Microsoft YaHei UI", 9), bg=self.COLOR_CARD, fg=self.COLOR_TEXT, anchor="w").pack(side="left", fill="x", expand=True)
+
+                btn_del_fact = tk.Button(
+                    row,
+                    text="✕",
+                    command=lambda i=idx: self._on_delete_single_fact(i),
+                    font=("Microsoft YaHei UI", 7),
+                    bg=self.COLOR_CARD,
+                    fg="#ef4444",
+                    bd=0,
+                    cursor="hand2"
+                )
+                btn_del_fact.pack(side="right", padx=4)
+
+        # 渲染自完善历史
+        self.txt_p_refinements.delete("1.0", "end")
+        if not profile.refinements:
+            self.txt_p_refinements.insert("1.0", "暂无自完善演进记录。")
+        else:
+            lines = []
+            for r in reversed(profile.refinements):
+                t = r.get("time", "")
+                note = r.get("note", "")
+                lines.append(f"[{t}] {note}")
+            self.txt_p_refinements.insert("1.0", "\n".join(lines))
+
+    def _on_rebuild_selected_profile(self):
+        """点击基于已有历史聊天记录分析/重建画像"""
+        if not self.current_selected_person_id:
+            return
+
+        person_id = self.current_selected_person_id
+        target_name = self._resolve_contact_display_name(
+            person_id,
+            default_name=self.current_selected_profile.name if self.current_selected_profile else person_id
+        )
+
+        self.btn_p_rebuild.configure(text="⏳ 正在分析历史记录...", state="disabled")
+
+        def worker():
+            try:
+                profile = self.profile_engine.build_profile_from_history(
+                    person_id=person_id,
+                    name=target_name,
+                    chat_type="group" if person_id.startswith("group_member:") else "private",
+                    last_chat_id=person_id.replace("group_member:", "") if ":" in person_id else person_id
+                )
+                def on_done():
+                    self.btn_p_rebuild.configure(text="🔍 基于已有聊天记录分析/重建画像", state="normal")
+                    self.current_selected_profile = profile
+                    self._render_profile_details(profile)
+                    self._load_profiles_into_tree()
+                    messagebox.showinfo(
+                        "画像构建成功",
+                        f"已为联系人【{profile.name}】建立专属立体画像！\n\n"
+                        f"- 身份定位: {profile.identity}\n"
+                        f"- 性格特质: {profile.personality}\n"
+                        f"- 关键事实: 共提炼 {len(profile.facts)} 条永久事实记忆"
+                    )
+                self.dispatch_ui(on_done)
+            except Exception as e:
+                err_msg = str(e)
+                def on_err():
+                    self.btn_p_rebuild.configure(text="🔍 基于已有聊天记录分析/重建画像", state="normal")
+                    messagebox.showerror("分析失败", f"分析历史记录构建画像出现异常:\n{err_msg}")
+                self.dispatch_ui(on_err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_save_selected_profile(self):
+        """保存右侧表单的手工调整"""
+        if not self.current_selected_profile:
+            return
+
+        p = self.current_selected_profile
+        p.identity = self.var_p_identity.get().strip() or "普通联系人"
+        p.tags = [t.strip() for t in self.var_p_tags.get().replace("，", ",").split(",") if t.strip()]
+        p.personality = self.var_p_personality.get().strip() or "礼貌友好"
+        p.communication_style = self.var_p_comm_style.get().strip() or "偏好直接简短回答"
+        p.interests = [i.strip() for i in self.var_p_interests.get().replace("，", ",").split(",") if i.strip()]
+        p.current_focus = self.var_p_focus.get().strip()
+
+        p.refinements.append({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "note": "管理员在控制台手动调整了画像属性与偏好"
+        })
+
+        self.profile_engine.save_profile(p)
+        self._load_profiles_into_tree()
+        self._render_profile_details(p)
+        messagebox.showinfo("成功", f"【{p.name}】的画像记忆调整已保存！")
+
+    def _on_delete_selected_profile(self):
+        """清除当前联系人的画像记忆"""
+        if not self.current_selected_person_id:
+            return
+
+        pid = self.current_selected_person_id
+        if messagebox.askyesno("确认清除", f"确认要清空联系人 [{self.lbl_p_name.cget('text')}] 的全部专属画像与永久事实记忆吗？此操作无法撤销。"):
+            self.profile_engine.delete_profile(pid)
+            self._load_profiles_into_tree()
+            self.p_detail_frame.pack_forget()
+            self.p_empty_tip.pack(fill="both", expand=True)
+            messagebox.showinfo("已清除", "该联系人的画像记忆已成功清空。")
+
+    def _on_add_single_fact(self):
+        """添加单条事实记忆"""
+        if not self.current_selected_profile:
+            return
+
+        new_f = self.var_new_fact.get().strip()
+        if not new_f:
+            return
+
+        self.current_selected_profile.facts.append(new_f)
+        self.current_selected_profile.refinements.append({
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "note": f"手动录入了事实记忆: {new_f}"
+        })
+        self.profile_engine.save_profile(self.current_selected_profile)
+        self.var_new_fact.set("")
+        self._render_profile_details(self.current_selected_profile)
+        self._load_profiles_into_tree()
+
+    def _on_delete_single_fact(self, index: int):
+        """删除单条事实记忆"""
+        if not self.current_selected_profile or index >= len(self.current_selected_profile.facts):
+            return
+
+        del self.current_selected_profile.facts[index]
+        self.profile_engine.save_profile(self.current_selected_profile)
+        self._render_profile_details(self.current_selected_profile)
+        self._load_profiles_into_tree()
+
+    def _on_manual_create_profile(self):
+        """手动为某个微信号/群成员创建画像档案"""
+        pid = simpledialog.askstring("手动建档", "请输入联系人的 wxid、微信号或群成员ID:", parent=self.root)
+        if not pid or not pid.strip():
+            return
+        pid = pid.strip()
+        disp_name = self._resolve_contact_display_name(pid)
+        p = self.profile_engine.build_profile_from_history(person_id=pid, name=disp_name)
+        self._load_profiles_into_tree()
+        self.tree_profiles.selection_set(pid)
+        self._on_profile_tree_select(None)
+
+    # -------------------------------------------------------------------------
+    # Tab 6: 多模态与媒体设置 (Multimodal & Media Settings)
     # -------------------------------------------------------------------------
     def _build_media_tab(self):
         parent = self.tab_media
@@ -3120,7 +3901,26 @@ class WeChatAIAgentApp:
             def update_trees():
                 self._render_contacts_tree()
                 self._render_groups_tree()
+                self._load_profiles_into_tree()
             self.dispatch_ui(update_trees)
+
+            # 4. 若已配置知识库，在后台自动加载/预热索引并填充文档列表
+            if self.config.rag.kb_folder_path and os.path.isdir(self.config.rag.kb_folder_path):
+                try:
+                    rag_res = self.rag_engine.reindex(self.config.rag.kb_folder_path, force=False)
+                    if rag_res.get("success"):
+                        doc_cnt = rag_res.get("doc_count", 0)
+                        chunk_cnt = rag_res.get("chunk_count", 0)
+                        def update_rag_status():
+                            self.lbl_rag_status.configure(
+                                text=f"✅ 索引就绪：共 {doc_cnt} 个文档，{chunk_cnt} 个切片片段",
+                                fg=self.COLOR_SUCCESS
+                            )
+                            # 自动刷新扫描文档表格
+                            self._on_scan_docs_click()
+                        self.dispatch_ui(update_rag_status)
+                except Exception as ex:
+                    print(f"[RAG] 启动初始化加载知识库索引失败: {ex}")
 
         except Exception as e:
             self.dispatch_ui(self._append_log, "error", "异常", f"加载初始数据失败: {e}")

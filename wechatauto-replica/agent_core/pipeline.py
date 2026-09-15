@@ -52,10 +52,17 @@ class PipelineResult:
 class AgentPipeline:
     """智能体全流程决策管道"""
 
-    def __init__(self, config: AppConfig, llm_client: LLMClient, rag_engine: RAGEngine):
+    def __init__(
+        self,
+        config: AppConfig,
+        llm_client: LLMClient,
+        rag_engine: RAGEngine,
+        profile_engine: Optional[ProfileEngine] = None,
+    ):
         self.config = config
         self.llm_client = llm_client
         self.rag_engine = rag_engine
+        self.profile_engine = profile_engine or ProfileEngine(config.profile, llm_client)
         self.image_engine = ImageEngine(config.image, config.llm)
         # 会话状态维护: chat_id -> {"history": list, "human_mode": bool, "last_reply_time": float}
         self.sessions: Dict[str, Dict[str, Any]] = {}
@@ -64,6 +71,7 @@ class AgentPipeline:
         self.config = config
         self.llm_client.update_config(config.llm)
         self.rag_engine.update_config(config.rag, config.llm)
+        self.profile_engine.update_config(config.profile, config.llm)
         self.image_engine.update_config(config.image, config.llm)
 
     def _get_session(self, chat_id: str) -> Dict[str, Any]:
@@ -109,12 +117,20 @@ class AgentPipeline:
         is_at_me: bool = False,
         image_path: Optional[str] = None,
         raw_msg_type: str = "文本",
+        sender_wxid: str = "",
+        enable_profile: bool = True,
     ) -> PipelineResult:
-        """运行完整智能体流水线 (支持文本、语音转写、多模态图片及OCR降级)"""
+        """运行完整智能体流水线 (支持文本、语音转写、多模态图片、OCR、RAG与联系人专属画像记忆)"""
         start_ts = time.time()
         steps: List[PipelineStep] = []
         rag_hits: List[Dict[str, Any]] = []
         tool_executions: List[Dict[str, Any]] = []
+
+        # 计算独立联系人实体 ID (群聊使用成员真实 wxid 强隔离，私聊使用 chat_id/wxid)
+        if is_group:
+            person_id = f"group_member:{sender_wxid}" if sender_wxid else f"group_member:{chat_id}:{sender_name}"
+        else:
+            person_id = sender_wxid or chat_id
 
         session = self._get_session(chat_id)
         clean_content = content.strip()
@@ -360,8 +376,46 @@ class AgentPipeline:
                 details="RAG知识库未开启或未建立索引 (跳过检索，直接进入LLM理解)"
             ))
 
+        # Step 2.5: 联系人专属画像与长期记忆注入 (聊天开始即生效，各成员独立隔离)
+        profile_context_text = ""
+        if enable_profile and self.config.profile.enabled:
+            try:
+                profile_context_text = self.profile_engine.get_prompt_context(person_id)
+                if not profile_context_text:
+                    # 首次交互自动初建画像 (基于已有聊天记录)
+                    p = self.profile_engine.build_profile_from_history(
+                        person_id=person_id,
+                        name=sender_name,
+                        chat_type="group" if is_group else "private",
+                        last_chat_id=chat_id,
+                    )
+                    if p:
+                        profile_context_text = p.get_prompt_summary()
+
+                if profile_context_text:
+                    steps.append(PipelineStep(
+                        name="2.5 联系人专属画像",
+                        status="success",
+                        details=f"已加载 [{sender_name}] 的专属画像记忆并注入提示词"
+                    ))
+            except Exception as e:
+                steps.append(PipelineStep(
+                    name="2.5 联系人专属画像",
+                    status="failed",
+                    details=f"加载画像异常: {e}"
+                ))
+        else:
+            if is_group and not enable_profile:
+                steps.append(PipelineStep(
+                    name="2.5 联系人专属画像",
+                    status="skipped",
+                    details="本群聊未开启群成员画像功能 (群设置默认关闭)"
+                ))
+
         # Step 3: 构建大模型 Prompt 与上下文
         system_content = self.config.safety.system_prompt or "你是一个智能微信助手。"
+        if profile_context_text:
+            system_content += f"\n\n{profile_context_text}"
         if rag_context_text:
             system_content += f"\n\n【本地知识库参考资料】\n请结合以下本地知识库内容优先准确回答用户问题：\n{rag_context_text}"
 
@@ -465,6 +519,22 @@ class AgentPipeline:
         session["history"].append({"role": "assistant", "content": final_content})
         session["last_reply_time"] = time.time()
         session["daily_count"] = session.get("daily_count", 0) + 1
+
+        # 触发联系人画像持续自完善与自修复 (后台异步，不拖慢即时回复)
+        if enable_profile and self.config.profile.enabled and self.config.profile.auto_refine:
+            try:
+                self.profile_engine.refine_profile_async(
+                    person_id=person_id,
+                    new_dialogue=[
+                        {"role": "user", "content": clean_content},
+                        {"role": "assistant", "content": final_content}
+                    ],
+                    name=sender_name,
+                    chat_type="group" if is_group else "private",
+                    last_chat_id=chat_id,
+                )
+            except Exception as e:
+                print(f"[Pipeline] 触发联系人画像自完善异常: {e}")
 
         steps.append(PipelineStep(
             name="5. 自动回复生成",
