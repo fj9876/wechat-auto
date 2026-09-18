@@ -9,11 +9,12 @@ dist/
 *.egg-info/
 .eggs/
 
-# Runtime logs
+# Runtime logs & crash reports
 wxauto_logs/
 wechatauto_logs/
 @AutomationLog.txt
 *.log
+gui_crash.log
 COMMIT_MSG.txt
 
 # Virtual environments
@@ -21,7 +22,7 @@ COMMIT_MSG.txt
 venv/
 env/
 
-# Config & secrets
+# Config & secrets (use config.example.json as template)
 config.json
 
 # Local data & cache
@@ -40,6 +41,11 @@ WeChatBot-new/
 scratch/
 .tempmediaStorage/
 
+# Voice clone audio files (user-recorded, not for repo)
+*.wav
+*.mp3
+*.flac
+
 # AI Models (仅推送文件夹名称及内部路径，通过 .gitkeep 保持目录结构)
 models/**
 !models/
@@ -49,6 +55,11 @@ models/**
 *.incomplete
 .cache/
 
-# Portable Runtime 全量推送
-!runtime/
-!runtime/**
+# Portable Runtime (基础便携环境已在仓库托管，忽略本地新增的运行时缓存与大型三方库)
+runtime/
+*.whl
+*.pt
+*.safetensors
+*.pth
+*.onnx
+

@@ -14,7 +14,7 @@ import json
 import os
 import time
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
 
@@ -55,7 +55,7 @@ class LLMConfig(BaseModel):
     api_key: str = Field(default="", description="API 密钥")
     model_name: str = Field(default="deepseek-chat", description="模型名称，如 deepseek-chat, gpt-4o, qwen-plus")
     temperature: float = Field(default=0.7, description="生成随机性 0.0 ~ 1.0")
-    max_tokens: int = Field(default=1500, description="最大回复长度")
+    max_tokens: Optional[int] = Field(default=None, description="最大回复长度，为 None 时由模型与对话场景自适应动态判定")
     embedding_api_url: str = Field(default="", description="可选: Embedding API 地址 (留空使用本地轻量BM25)")
     embedding_api_key: str = Field(default="", description="可选: Embedding API Key")
     embedding_model_name: str = Field(default="text-embedding-3-small", description="可选: Embedding 模型")
@@ -118,10 +118,21 @@ class SafetyConfig(BaseModel):
     # 插件工具扩展
     enable_tools: bool = Field(default=True, description="是否启用工具调用功能 (如天气、计算器等外部插件)")
 
+    @model_validator(mode="after")
+    def _ensure_presets(self) -> "SafetyConfig":
+        """保证内置系统提示词预设始终存在，同时保留用户自定义人设"""
+        full_presets = dict(PROMPT_PRESETS)
+        if self.presets:
+            full_presets.update(self.presets)
+        self.presets = full_presets
+        return self
+
     def get_presets(self) -> Dict[str, str]:
-        """获取全部人设字典映射，确保初始基础预设不丢失"""
-        if not self.presets:
-            self.presets = dict(PROMPT_PRESETS)
+        """获取全部人设字典映射，确保初始基础预设与自定义人设永不丢失"""
+        res = dict(PROMPT_PRESETS)
+        if self.presets:
+            res.update(self.presets)
+        self.presets = res
         return self.presets
 
 
@@ -181,6 +192,29 @@ class ImageConfig(BaseModel):
     ocr_engine: str = Field(default="winrt", description="本地备用 OCR 引擎: winrt (Windows 原生硬件加速 OCR)")
 
 
+
+class VoIPConfig(BaseModel):
+    """微信语音电话实时对话与自动接听配置"""
+    enabled: bool = Field(default=True, description="是否启用微信语音电话自动接听与实时AI对话")
+    sync_reply_targets: bool = Field(default=True, description="自动接听对象与当前微信自动回复对象(白名单)保持一致")
+    whitelist_users: List[str] = Field(default_factory=list, description="单独指定的语音通话白名单好友 (留空则沿用 targets.whitelist_users)")
+    enable_group_call: bool = Field(default=False, description="是否接听群聊语音通话 (默认严格关闭，忽略所有群聊电话)")
+    whitelist_groups: List[str] = Field(default_factory=list, description="允许自动接听的群聊列表 (必须单独手动指定)")
+    tts_engine: str = Field(default="chattts", description="TTS语音合成引擎: chattts 或 qwen3_tts")
+    voice_clone_enabled: bool = Field(default=False, description="是否启用声音克隆")
+    voice_clone_audio_path: str = Field(default="", description="声音克隆参考音频路径 (.wav/.mp3)")
+    voice_clone_prompt_text: str = Field(default="", description="声音克隆参考音频对应文本(可选)")
+    cloned_voices: List[Dict[str, Any]] = Field(default_factory=list, description="用户自定义克隆音色列表")
+    active_cloned_voice_id: str = Field(default="", description="当前生效的克隆音色 ID")
+    echo_cancellation_enabled: bool = Field(default=True, description="是否启用智能回声消除与防自发音串音保护")
+    echo_hangover_sec: float = Field(default=1.2, description="播音结束后残响与系统缓冲保护期(秒)")
+    auto_answer_delay_sec: float = Field(default=1.5, description="来电振铃等待时间(秒)，模拟真人接听反应")
+    max_call_duration_min: int = Field(default=15, description="单次通话最大保护时长(分钟)，防恶意占线")
+    virtual_input_device: str = Field(default="", description="音频录音输入设备(微信扬声器路由，如 CABLE-B Output)")
+    virtual_output_device: str = Field(default="", description="音频播放输出设备(注入微信麦克风，如 CABLE-A Input)")
+    barge_in_enabled: bool = Field(default=True, description="是否开启全双工智能打断 (对方说话立即暂停AI播音)")
+
+
 class AppConfig(BaseModel):
     """系统全局配置"""
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -190,6 +224,7 @@ class AppConfig(BaseModel):
     profile: ProfileConfig = Field(default_factory=ProfileConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     image: ImageConfig = Field(default_factory=ImageConfig)
+    voip: VoIPConfig = Field(default_factory=VoIPConfig)
     groups_config: Dict[str, SingleGroupConfig] = Field(
         default_factory=dict,
         description="群聊专属个性化配置字典，key 为 chatroom_id"
@@ -287,18 +322,22 @@ class AppConfig(BaseModel):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return cls(**data)
+                instance = cls(**data)
+                object.__setattr__(instance, "_loaded_path", filepath)
+                return instance
             except Exception as e:
                 print(f"[Config] 加载配置文件失败，将使用默认配置: {e}")
         cfg = cls()
+        object.__setattr__(cfg, "_loaded_path", filepath)
         cfg.save(filepath)
         return cfg
 
-    def save(self, filepath: str = CONFIG_FILE_PATH) -> None:
+    def save(self, filepath: Optional[str] = None) -> None:
         """保存配置到 JSON 文件"""
+        target = filepath or getattr(self, "_loaded_path", None) or CONFIG_FILE_PATH
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
                 json.dump(self.model_dump(), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Config] 保存配置文件失败: {e}")

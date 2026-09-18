@@ -140,6 +140,26 @@ class LLMClient:
         except Exception as e:
             return False, [], f"获取模型请求失败: {str(e)}"
 
+    def _resolve_dynamic_max_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        explicit_max_tokens: Optional[int] = None,
+    ) -> Optional[int]:
+        # 1. 仅在显式传入指定参数时使用 (例如: 连通性快速轻量探测指定 30 tokens 等)
+        if explicit_max_tokens is not None and explicit_max_tokens > 0:
+            return explicit_max_tokens
+
+        # 2. 底层配置文件若显式设定了正整数且非 None，予以尊重
+        cfg_max = getattr(self.config, "max_tokens", None)
+        if cfg_max is not None and isinstance(cfg_max, int) and cfg_max > 0:
+            return cfg_max
+
+        # 3. 自适应判断模式：
+        # 对于常规对话、复杂问答或工具调用，不向 API 强行施加 max_tokens 硬性截断参数，
+        # 完全交由大语言模型根据提问意图、知识库上下文与模型自身最大输出窗口自适应生成完整回复。
+        return None
+
     def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -166,12 +186,16 @@ class LLMClient:
             "Authorization": f"Bearer {key}" if key else "",
         }
 
+        dynamic_tokens = self._resolve_dynamic_max_tokens(messages, tools=tools, explicit_max_tokens=max_tokens)
+
         payload: Dict[str, Any] = {
             "model": (model_name or self.config.model_name or "deepseek-chat").strip(),
             "messages": messages,
             "temperature": temperature if temperature is not None else self.config.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
         }
+        if dynamic_tokens is not None and dynamic_tokens > 0:
+            payload["max_tokens"] = dynamic_tokens
+
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

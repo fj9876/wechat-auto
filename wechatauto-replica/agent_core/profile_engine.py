@@ -144,6 +144,35 @@ class ProfileEngine:
             print(f"[Profile] 读取画像文件失败 ({file_path}): {e}")
             return None
 
+    def get_or_create_profile(self, person_id: str, name: str = "") -> ContactProfile:
+        """获取或创建指定联系人的永久记忆画像 (支持按ID或姓名/备注智能解析复用，杜绝重复建档)"""
+        if not person_id:
+            return ContactProfile(person_id="unknown", name=name or "未知好友")
+
+        # 1. 精准按 person_id 读取
+        prof = self.load_profile(person_id)
+        if prof is not None:
+            if name and not prof.name:
+                prof.name = name
+                self.save_profile(prof)
+            return prof
+
+        # 2. 若未直接命中，遍历现有档案，防止同一人由于昵称与 wxid 不一致造成重复建档
+        search_keys = {k.strip() for k in [person_id, name] if k and k.strip()}
+        for p_meta in self.list_profiles():
+            p_pid = p_meta.get("person_id", "")
+            p_name = (p_meta.get("name") or "").strip()
+            p_remark = (p_meta.get("remark") or "").strip()
+            if (p_name and p_name in search_keys) or (p_remark and p_remark in search_keys):
+                existing_prof = self.load_profile(p_pid)
+                if existing_prof:
+                    return existing_prof
+
+        # 3. 确无匹配档案，再新建并保存
+        prof = ContactProfile(person_id=person_id, name=name)
+        self.save_profile(prof)
+        return prof
+
     def save_profile(self, profile: ContactProfile) -> None:
         """持久化保存画像到独立文件"""
         if not profile or not profile.person_id:

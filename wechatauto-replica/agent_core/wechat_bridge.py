@@ -79,37 +79,58 @@ class WeChatBridge:
             except Exception:
                 pass
 
-    def get_status(self) -> Dict[str, Any]:
-        """获取微信与机器人运行状态"""
+    def get_status(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """获取微信与机器人运行状态 (带高效缓存，防止频繁读取进程内存导致主界面卡死)"""
+        now = time.time()
+        if not force_refresh and hasattr(self, "_cached_status") and self._cached_status:
+            if now - getattr(self, "_last_status_time", 0) < 15.0:
+                res = dict(self._cached_status)
+                res["is_running"] = self.is_running
+                res["auto_reply_enabled"] = self.auto_reply_enabled
+                return res
+
         wechat_detected = False
         self_name = "未登录/未检测到"
         self_wxid = ""
 
         try:
-            from wechatauto.db import WeChatDB
-            if self._db is None:
-                self._db = WeChatDB()
-                if hasattr(self.pipeline, "profile_engine"):
-                    self.pipeline.profile_engine.set_db(self._db)
-            info = self._db.get_self_info()
-            if info and info.get("username"):
+            if getattr(self, "_self_info", None) and self._self_info.get("username") and not force_refresh:
                 wechat_detected = True
-                self_wxid = info.get("username", "")
-                self_name = info.get("nick_name") or self_wxid
-                self._self_info = info
+                self_wxid = self._self_info.get("username", "")
+                self_name = self._self_info.get("nick_name") or self_wxid
+            else:
+                from wechatauto.db import WeChatDB
+                if self._db is None:
+                    self._db = WeChatDB()
+                    if hasattr(self.pipeline, "profile_engine"):
+                        self.pipeline.profile_engine.set_db(self._db)
+                info = self._db.get_self_info()
+                if info and info.get("username"):
+                    wechat_detected = True
+                    self_wxid = info.get("username", "")
+                    self_name = info.get("nick_name") or self_wxid
+                    self._self_info = info
         except Exception:
             pass
 
-        return {
+        res = {
             "is_running": self.is_running,
             "auto_reply_enabled": self.auto_reply_enabled,
             "wechat_detected": wechat_detected,
             "self_name": self_name,
             "self_wxid": self_wxid,
         }
+        self._cached_status = res
+        self._last_status_time = now
+        return res
 
-    def get_contacts_and_groups(self) -> Dict[str, List[Dict[str, Any]]]:
-        """获取真实的微信通讯录好友与微信群列表 (排除公众号、订阅号与系统号)"""
+    def get_contacts_and_groups(self, force_refresh: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+        """获取真实的微信通讯录好友与微信群列表 (带 60 秒高速缓存，避免频繁阻塞)"""
+        now = time.time()
+        if not force_refresh and hasattr(self, "_cached_contacts_groups") and self._cached_contacts_groups:
+            if now - getattr(self, "_last_contacts_time", 0) < 60.0:
+                return self._cached_contacts_groups
+
         contacts = []
         groups = []
 
@@ -133,7 +154,7 @@ class WeChatBridge:
             contacts.append({
                 "username": "filehelper",
                 "name": "文件传输助手",
-                "remark": "官方测试助手",
+                "remark": "",
                 "is_group": False,
                 "summary": session_map.get("filehelper", {}).get("summary", "微信安全测试会话"),
                 "unread": session_map.get("filehelper", {}).get("unread", 0),
@@ -247,7 +268,10 @@ class WeChatBridge:
         except Exception as e:
             self.emit_event("log", {"level": "error", "message": f"获取通讯录与群列表失败: {e}"})
 
-        return {"contacts": contacts, "groups": groups}
+        res = {"contacts": contacts, "groups": groups}
+        self._cached_contacts_groups = res
+        self._last_contacts_time = now
+        return res
 
     def get_group_members(self, chatroom_wxid: str) -> List[Dict[str, Any]]:
         """获取指定群聊的全部成员列表"""
@@ -887,6 +911,131 @@ class WeChatBridge:
         except Exception:
             pass
 
+    def _find_wechat4_main_hwnd(self) -> Optional[int]:
+        """精确定位微信 4.x 主窗口句柄 (兼容所有多桌面/无UIA树环境)"""
+        try:
+            import win32gui, win32process, psutil, ctypes
+            user32 = ctypes.windll.user32
+            h_desk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if h_desk:
+                user32.SetThreadDesktop(h_desk)
+
+            pids = {p.info['pid'] for p in psutil.process_iter(['pid', 'name']) if 'weixin' in (p.info.get('name') or '').lower()}
+            if not pids:
+                return None
+
+            target_hwnd = None
+            def enum_cb(hwnd, _):
+                nonlocal target_hwnd
+                if not win32gui.IsWindow(hwnd):
+                    return True
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if pid in pids:
+                    rect = win32gui.GetWindowRect(hwnd)
+                    w = rect[2] - rect[0]
+                    h = rect[3] - rect[1]
+                    vis = win32gui.IsWindowVisible(hwnd)
+                    # 微信 4.x 主窗口特征：处于可见状态，宽 > 450，高 > 350
+                    if vis and w > 450 and h > 350:
+                        target_hwnd = hwnd
+                        return False
+                return True
+
+            if h_desk:
+                user32.EnumDesktopWindows(h_desk, ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(enum_cb), 0)
+            else:
+                win32gui.EnumWindows(enum_cb, 0)
+
+            return target_hwnd
+        except Exception as e:
+            logger.warning(f"[WeChatBridge] 定位微信窗口句柄异常: {e}")
+            return None
+
+    def _send_via_wechat4_fast(self, candidate: str, reply_text: str) -> bool:
+        """微信 4.0/4.1 高保真极速自适应物理发送引擎 (彻底攻克旧版 OCR 驱动卡死/超时的缺陷)"""
+        try:
+            import win32gui, win32con, ctypes
+            import pyautogui
+            import pyperclip
+            import time
+
+            hwnd = self._find_wechat4_main_hwnd()
+            if not hwnd:
+                logger.warning("[WeChatBridge] 未找到运行中的微信 4.x 主窗口")
+                return False
+
+            user32 = ctypes.windll.user32
+            h_desk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if h_desk:
+                user32.SetThreadDesktop(h_desk)
+
+            # 1. 窗口位置自适应纠偏 (防止被拖拽到屏幕外负坐标导致物理点击失效)
+            rect = win32gui.GetWindowRect(hwnd)
+            left, top, right, bottom = rect
+            w = right - left
+            h = bottom - top
+            if left < 0 or top < 0:
+                new_left = max(0, left)
+                new_top = max(0, top)
+                win32gui.SetWindowPos(hwnd, 0, new_left, new_top, w, h, win32con.SWP_NOZORDER | win32con.SWP_SHOWWINDOW)
+                time.sleep(0.08)
+                rect = win32gui.GetWindowRect(hwnd)
+                left, top, right, bottom = rect
+                w = right - left
+                h = bottom - top
+
+            # 2. 强效置顶与焦点夺取 (采用 HWND_TOPMOST 瞬时置顶，杜绝被 IDE/浏览器/其他窗口遮挡)
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            else:
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+            user32.SwitchToThisWindow(hwnd, True)
+            user32.BringWindowToTop(hwnd)
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            time.sleep(0.12)
+
+            try:
+                # 3. 目标会话激活策略:
+                # 刚刚发来消息的目标通常正是第一项，点击列表第一项激活当前会话
+                pyautogui.click(left + 160, top + 100)
+                time.sleep(0.08)
+
+                # 4. 点击右侧主聊天窗底部的输入框 (准确定位输入文本区域)
+                # 输入框垂直中心约为 bottom - 100，水平中心为 left + 280 + (w - 280) // 2
+                input_x = left + 280 + (w - 280) // 2
+                input_y = bottom - 100
+                pyautogui.click(input_x, input_y)
+                time.sleep(0.08)
+
+                # 5. 剪贴板注入完整多行文本并粘贴
+                pyperclip.copy(reply_text)
+                time.sleep(0.05)
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(0.08)
+
+                # 6. 发送：回车发送 + 辅以右下角发送按钮物理坐标双重兜底保障
+                pyautogui.press('enter')
+                time.sleep(0.06)
+
+                send_btn_x = right - 45
+                send_btn_y = bottom - 35
+                pyautogui.click(send_btn_x, send_btn_y)
+                time.sleep(0.05)
+
+                return True
+            finally:
+                # 7. 恢复窗口非置顶，保持用户正常的窗口层级体验
+                win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+
+        except Exception as e:
+            logger.warning(f"[WeChatBridge] 微信 4.x 原生极速发送异常: {e}", exc_info=True)
+            return False
+
     def _send_reply(self, target_who: str, reply_text: str) -> None:
         """执行回复发送 (带防刷节流锁与智能名称多候选容错)"""
         with self._lock:
@@ -897,13 +1046,43 @@ class WeChatBridge:
 
             self._ensure_interactive_desktop()
             primary_name, candidates = self.resolve_chat_target(target_who)
+            best_target = candidates[0] if candidates else target_who
 
+            self.emit_event("log", {
+                "level": "info",
+                "message": f"🚀 正在向 [{best_target}] 发送自动回复...",
+            })
+
+            # 优先采用微信 4.x 极速原生物理发送引擎 (绕过失效的旧版 OCR/UIA 驱动)
+            fast_ok = self._send_via_wechat4_fast(best_target, reply_text)
+            if fast_ok:
+                self._last_send_ts = time.time()
+                now = time.time()
+                clean_reply = reply_text.strip()
+                for cand in (candidates or [target_who]):
+                    self._recent_sent_replies.append({"target": cand, "text": clean_reply, "ts": now})
+
+                self.emit_event("message_sent", {
+                    "target": best_target,
+                    "text": reply_text,
+                    "success": True,
+                })
+                self.emit_event("log", {
+                    "level": "success",
+                    "message": f"✅ 微信已成功发送回复 -> [{best_target}]！",
+                })
+                return
+
+            # 如果微信 4.x 极速发送未成功，提示并安全回退
+            self.emit_event("log", {
+                "level": "warning",
+                "message": f"⚠️ 微信 4.x 极速发送未命中窗口，尝试兼容驱动发送...",
+            })
             try:
                 from wechatauto.guia import WeChatGUI
                 if self._gui is None:
                     self._gui = WeChatGUI()
 
-                # 优先尝试最佳解析名 (如备注名、文件传输助手、群名)
                 tried_targets = []
                 send_success = False
                 last_err = ""
@@ -913,15 +1092,9 @@ class WeChatBridge:
                         continue
                     tried_targets.append(candidate)
 
-                    self.emit_event("log", {
-                        "level": "info",
-                        "message": f"🚀 正在向 [{candidate}] 发送回复: {reply_text[:60]}...",
-                    })
-
                     resp = self._gui.send_msg(reply_text, candidate)
                     self._last_send_ts = time.time()
 
-                    # 记录本次发出的回复内容，以便拦截后续数据库落库回环
                     now = time.time()
                     clean_reply = reply_text.strip()
                     self._recent_sent_replies.append({

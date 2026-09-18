@@ -84,9 +84,16 @@ models/**
 .cache/
 
 # =============================================================================
-# Portable Runtime 全量推送 (包含所有运行库与二进制)
+# Portable Runtime (基础便携环境已在仓库托管，忽略本地新增的运行时缓存与大型三方库)
 # =============================================================================
-!runtime/
-!runtime/**
-!**/runtime/
-!**/runtime/**
+runtime/
+wechatauto-replica/runtime/
+*.whl
+*.pt
+*.safetensors
+*.pth
+*.onnx
+*.wav
+*.mp3
+*.flac
+gui_crash.log

@@ -1591,16 +1591,30 @@ class WeChatDB:
         return None
 
     def _find_msg_tables(self, user: str, conns: List[sqlite3.Connection]) -> List[Tuple[sqlite3.Connection, str]]:
-        """定位会话消息表的全部命中分片（同一 Msg_ 表可能拆分在 message_0..N）。"""
+        """定位会话消息表的全部命中分片（带内存缓存，避免高频轮询重复扫描 sqlite_master）。"""
         target = "Msg_" + _md5_hex(user.encode())
+        if not hasattr(self, "_msg_table_cache"):
+            self._msg_table_cache = {}
+
+        cached_indices = self._msg_table_cache.get(target)
+        if cached_indices is not None:
+            found = []
+            for idx in cached_indices:
+                if idx < len(conns):
+                    found.append((conns[idx], target))
+            return found
+
         found = []
-        for conn in conns:
+        matched_indices = []
+        for idx, conn in enumerate(conns):
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 (target,),
             ).fetchone()
             if row:
                 found.append((conn, target))
+                matched_indices.append(idx)
+        self._msg_table_cache[target] = matched_indices
         return found
 
     def _invalidate_cache(self, rel: Optional[str] = None) -> None:
@@ -1608,6 +1622,8 @@ class WeChatDB:
 
         如果指定了 rel，则仅清理该指定库的缓存，不破坏其它正在读取的数据库。
         """
+        if hasattr(self, "_msg_table_cache"):
+            self._msg_table_cache.clear()
         with getattr(self, "_db_lock", threading.Lock()):
             try:
                 names = os.listdir(self.workdir)
@@ -2755,17 +2771,61 @@ class Listener:
                 sys.stderr.write("listener poll error: %r\n" % exc)
             self._stop.wait(self.interval)
 
+    def _get_db_fingerprint(self) -> tuple:
+        """快速提取所有消息库与会话库的 (mtime, size) 指纹，用于 0 耗时判定是否有新数据写入"""
+        sig = []
+        try:
+            for rel in self.db._message_dbs():
+                p = self.db._db_path(rel)
+                w = self.db._wal_path(rel)
+                try:
+                    sig.append((p, os.path.getmtime(p), os.path.getsize(p)))
+                except OSError:
+                    pass
+                if w:
+                    try:
+                        sig.append((w, os.path.getmtime(w), os.path.getsize(w)))
+                    except OSError:
+                        pass
+            for rel, path, _ in getattr(self.db, "_db_files", []):
+                if os.path.basename(path) == "session.db":
+                    w = self.db._wal_path(rel)
+                    try:
+                        sig.append((path, os.path.getmtime(path), os.path.getsize(path)))
+                    except OSError:
+                        pass
+                    if w:
+                        try:
+                            sig.append((w, os.path.getmtime(w), os.path.getsize(w)))
+                        except OSError:
+                            pass
+                    break
+        except Exception:
+            pass
+        return tuple(sig)
+
     def _poll_once(self) -> None:
-        # 自动发现新会话（add_all 的 discover 模式）
+        # 1. 快速指纹检测门禁：若自上次轮询后无任何 DB/WAL 写入变更，直接跳过全量遍历
+        curr_fp = self._get_db_fingerprint()
+        last_fp = getattr(self, "_last_db_fp", None)
+        if last_fp is not None and curr_fp == last_fp:
+            return
+        self._last_db_fp = curr_fp
+
+        # 2. 自动发现新会话（周期防抖，无需每秒全量读取）
+        now = time.time()
+        last_disc = getattr(self, "_last_discover_time", 0)
         if getattr(self, '_discover_new', False) and getattr(self, '_all_callback', None):
-            try:
-                sessions = self.db.get_sessions(limit=500)
-                for s in sessions:
-                    username = s["username"]
-                    if username not in self._callbacks:
-                        self.add_listener(username, self._all_callback)
-            except Exception:
-                pass
+            if now - last_disc > 5.0:
+                self._last_discover_time = now
+                try:
+                    sessions = self.db.get_sessions(limit=500)
+                    for s in sessions:
+                        username = s["username"]
+                        if username not in self._callbacks:
+                            self.add_listener(username, self._all_callback)
+                except Exception:
+                    pass
 
         for user, callbacks in list(self._callbacks.items()):
             # 起读点 = 已确认水位 与 已分派未确认边界 的较大值：

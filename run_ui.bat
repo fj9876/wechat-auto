@@ -6,7 +6,7 @@ cd /d "%~dp0"
 if exist "wechatauto-replica\gui_app.py" cd /d "%~dp0wechatauto-replica"
 
 REM Environment isolation
-set "PYTHONNOUSERSITE=1"
+REM set "PYTHONNOUSERSITE=1"
 set "PYTHONUNBUFFERED=1"
 set "PYTHONIOENCODING=utf-8"
 

@@ -91,12 +91,35 @@ class AgentPipeline:
                 "last_reply_time": 0.0,
             }
 
+    @staticmethod
+    def _truncate_cleanly(text: str, max_len: int) -> str:
+        """智能优雅截断：优先在自然段落或完整句子标点处截断，保持逻辑连贯，绝不断词断句"""
+        if max_len <= 0 or len(text) <= max_len:
+            return text
+
+        candidate = text[:max_len]
+        # 搜索区间：从 max_len 倒退回约 70% 处，寻找最近的段落或句子结束标点
+        min_cutoff = int(max_len * 0.7)
+
+        # 优先在双换行段落或完整句子标点处截断
+        for sep in ["\n\n", "。\n", "！\n", "？\n", "。", "！", "？", "；\n", "；", "\n", ". ", "! ", "? "]:
+            pos = candidate.rfind(sep, min_cutoff)
+            if pos != -1:
+                return candidate[:pos + len(sep)].strip() + "\n\n(由于单条字数限制已截断，如需了解更多请回复'继续')..."
+
+        # 若未找到标点，检查空格（避免在英文单词中间生硬截断）
+        pos = candidate.rfind(" ", min_cutoff)
+        if pos != -1:
+            return candidate[:pos].strip() + "..."
+
+        return candidate + "..."
+
     def _decorate_reply(self, reply_text: str, is_group: bool, sender_name: str) -> str:
         """统一对回复内容应用长度截断、前缀、后缀以及群聊@提问者"""
         reply = reply_text.strip()
         max_len = getattr(self.config.safety, "max_reply_length", 0) or 0
         if max_len > 0 and len(reply) > max_len:
-            reply = reply[:max_len] + "..."
+            reply = self._truncate_cleanly(reply, max_len)
 
         if self.config.safety.reply_prefix:
             reply = f"{self.config.safety.reply_prefix}{reply}"
@@ -414,6 +437,9 @@ class AgentPipeline:
 
         # Step 3: 构建大模型 Prompt 与上下文
         system_content = self.config.safety.system_prompt or "你是一个智能微信助手。"
+        max_len = getattr(self.config.safety, "max_reply_length", 0) or 0
+        if max_len > 0:
+            system_content += f"\n\n【回答篇幅约束】请将回答精炼控制在 {max_len} 字以内，确保语言凝练、条理完整清晰，有始有终，避免未说完被截断。"
         if profile_context_text:
             system_content += f"\n\n{profile_context_text}"
         if rag_context_text:

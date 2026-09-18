@@ -1,0 +1,96 @@
+{
+  "llm": {
+    "api_url": "http://127.0.0.1:8045/v1",
+    "api_key": "sk-your-api-key-here",
+    "model_name": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": null,
+    "embedding_api_url": "",
+    "embedding_api_key": "",
+    "embedding_model_name": "text-embedding-3-small"
+  },
+  "targets": {
+    "reply_all_private": false,
+    "whitelist_users": ["wxid_your_friend_wxid_here"],
+    "reply_all_groups": false,
+    "whitelist_groups": ["your_group_id@chatroom"],
+    "group_at_only": true,
+    "group_auto_at_sender": false,
+    "custom_at_triggers": []
+  },
+  "rag": {
+    "enabled": false,
+    "kb_folder_path": "F:/RAG",
+    "top_k": 3,
+    "similarity_threshold": 0.25,
+    "chunk_size": 500,
+    "chunk_overlap": 50
+  },
+  "safety": {
+    "preset_name": "通用全能助手",
+    "presets": {
+      "通用全能助手": "你是一个友好、专业、高效的微信智能助手。"
+    },
+    "system_prompt": "你是一个友好、专业、高效的微信智能助手。",
+    "reply_prefix": "",
+    "reply_suffix": "",
+    "max_reply_length": 0,
+    "handover_keyword": "转人工,人工客服",
+    "handover_reply": "已为您转接人工，机器人暂停回复。",
+    "reset_handover_keyword": "恢复AI,开启AI",
+    "cooldown_seconds": 2.0,
+    "daily_chat_limit": 0,
+    "sensitive_words": "",
+    "sensitive_action": "refuse",
+    "sensitive_reply": "抱歉，该话题暂时无法通过AI助手解答，敬请谅解。",
+    "enable_tools": true
+  },
+  "profile": {
+    "enabled": true,
+    "enable_private_chat": true,
+    "storage_dir": "data/profiles",
+    "max_history_scan": 50,
+    "auto_refine": true,
+    "inject_prompt": true
+  },
+  "voice": {
+    "enabled": false,
+    "engine": "local",
+    "whisper_model": "small",
+    "whisper_device": "auto",
+    "cloud_api_url": "https://api.openai.com/v1",
+    "cloud_api_key": "sk-your-cloud-asr-key-here",
+    "cloud_model_name": "whisper-1"
+  },
+  "image": {
+    "enabled": false,
+    "strategy": "vision_only",
+    "vision_api_url": "https://api.openai.com/v1",
+    "vision_api_key": "sk-your-vision-api-key-here",
+    "vision_model_name": "gpt-4o-mini",
+    "fallback_to_ocr": true,
+    "ocr_engine": "winrt"
+  },
+  "voip": {
+    "enabled": false,
+    "sync_reply_targets": true,
+    "whitelist_users": [],
+    "enable_group_call": false,
+    "whitelist_groups": [],
+    "tts_engine": "edge_tts",
+    "voice_clone_enabled": false,
+    "voice_clone_audio_path": "",
+    "voice_clone_prompt_text": "",
+    "cloned_voices": [],
+    "active_cloned_voice_id": "",
+    "echo_cancellation_enabled": true,
+    "echo_hangover_sec": 1.2,
+    "auto_answer_delay_sec": 1.0,
+    "max_call_duration_min": 60,
+    "virtual_input_device": "CABLE Output (VB-Audio Virtual Cable)",
+    "virtual_output_device": "CABLE Input (VB-Audio Virtual Cable)",
+    "barge_in_enabled": true
+  },
+  "groups_config": {},
+  "auto_start_wechat": false
+}

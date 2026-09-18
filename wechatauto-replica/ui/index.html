@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeChat-AIAgent 微信智能自动回复助手 v2.0</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app-window">
+    <!-- 顶部 Header (72px) -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="robot-avatar">
+          <!-- 拟态机器人头像 SVG -->
+          <svg viewBox="0 0 24 24">
+            <path d="M12 2a2 2 0 0 1 2 2v1h1a5 5 0 0 1 5 5v7a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V10a5 5 0 0 1 5-5h1V4a2 2 0 0 1 2-2zm-3 9a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-6 5a1 1 0 0 0 0 2h6a1 1 0 1 0 0-2H9z"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">
+            WeChat-AIAgent 微信智能自动回复助手
+            <span class="brand-badge">v2.0</span>
+          </div>
+          <div class="brand-status">
+            <span class="status-dot"></span>
+            <span id="header-conn-status">微信已连接 (检测中...)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn-icon-round" id="btn-bell" title="通知提醒">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+        </button>
+
+        <button class="btn-icon-round" id="btn-theme-refresh" title="刷新状态">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+        </button>
+
+        <button class="btn-glass" id="btn-refresh-status">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+          刷新状态
+        </button>
+
+        <button class="btn-gradient" id="btn-toggle-reply-top">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="4" width="4" height="16"></rect>
+            <rect x="14" y="4" width="4" height="16"></rect>
+          </svg>
+          <span id="btn-toggle-reply-text">暂停自动回复</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- 主体区域 (Sidebar + Main) -->
+    <div class="app-body">
+      <!-- 左侧侧边栏 (240px) -->
+      <aside class="app-sidebar">
+        <div class="sidebar-heading">功能导航菜单</div>
+        <nav class="nav-menu">
+          <div class="nav-item active" data-tab="tab-dashboard">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            运行看板与实时日志
+          </div>
+
+          <div class="nav-item" data-tab="tab-targets">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+            回复对象配置
+          </div>
+
+          <div class="nav-item" data-tab="tab-llm">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            大模型配置
+          </div>
+
+          <div class="nav-item" data-tab="tab-rag">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </svg>
+            本地知识库 (RAG)
+          </div>
+
+          <div class="nav-item" data-tab="tab-memory">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            联系人画像与记忆
+          </div>
+
+          <div class="nav-item" data-tab="tab-multimodal">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+            多模态与媒体设置
+          </div>
+
+          <div class="nav-item" data-tab="tab-voip">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+            </svg>
+            📞 语音通话智能体
+          </div>
+
+          <div class="nav-item" data-tab="tab-sandbox">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="14 2 18 6 7 17 3 17 3 13 14 2"></polygon>
+              <line x1="3" y1="22" x2="21" y2="22"></line>
+            </svg>
+            交互测试沙盒
+          </div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="foot-brand">WeChat-AIAgent v2.0</div>
+          <div class="foot-slogan">AI 让沟通更简单</div>
+        </div>
+      </aside>
+
+      <!-- 主视窗工作区 (多标签页切换) -->
+      <main class="app-main">
+        <!-- ===================================================================
+             TAB 1: 运行看板与实时日志 (与参考设计图 100% 对应)
+             =================================================================== -->
+        <section class="tab-pane active" id="tab-dashboard">
+          <!-- 顶部 4 个玻璃拟态数据卡片 -->
+          <div class="stats-grid">
+            <!-- 1. 今日接收消息 -->
+            <div class="stat-card">
+              <div class="stat-card-header">
+                <span class="stat-label">今日接收消息</span>
+                <div class="stat-icon-badge blue">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                </div>
+              </div>
+              <div class="stat-card-body">
+                <span class="stat-value" id="stat-received">4</span>
+              </div>
+            </div>
+
+            <!-- 2. 自动成功回复 -->
+            <div class="stat-card">
+              <div class="stat-card-header">
+                <span class="stat-label">自动成功回复</span>
+                <div class="stat-icon-badge green">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                  </svg>
+                </div>
+              </div>
+              <div class="stat-card-body">
+                <span class="stat-value" id="stat-replied">2</span>
+              </div>
+            </div>
+
+            <!-- 3. 规则过滤/忽略 -->
+            <div class="stat-card">
+              <div class="stat-card-header">
+                <span class="stat-label">规则过滤/忽略</span>
+                <div class="stat-icon-badge orange">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                  </svg>
+                </div>
+              </div>
+              <div class="stat-card-body">
+                <span class="stat-value" id="stat-ignored">2</span>
+              </div>
+            </div>
+
+            <!-- 4. 自动回复开关 -->
+            <div class="stat-card">
+              <div class="stat-card-header">
+                <span class="stat-label">自动回复开关</span>
+                <div class="stat-icon-badge cyan">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polygon points="10 8 16 12 10 16 10 8"></polygon>
+                  </svg>
+                </div>
+              </div>
+              <div class="stat-card-body">
+                <span class="stat-value" style="font-size: 20px; font-weight: 700; color: var(--accent-green);" id="stat-switch-text">运行中</span>
+                <label class="ios-switch">
+                  <input type="checkbox" id="switch-auto-reply" checked>
+                  <span class="slider-round"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- 核心日志监控大窗口 -->
+          <div class="ai-console-card">
+            <div class="console-header">
+              <div class="console-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                实时微信消息通知与智能体决策链路
+              </div>
+
+              <div class="console-actions">
+                <button class="btn-console" id="btn-sync-messages">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                  </svg>
+                  同步微信最新消息
+                </button>
+                <button class="btn-console" id="btn-clear-console">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                  清空日志
+                </button>
+                <button class="btn-console" id="btn-copy-console">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                  复制日志
+                </button>
+                <label class="autoscroll-toggle">
+                  <input type="checkbox" id="chk-autoscroll" checked>
+                  自动滚屏
+                </label>
+              </div>
+            </div>
+
+            <!-- 代码监控控制台 -->
+            <div class="console-body" id="console-output">
+              <!-- 初始演示与实时追加的决策日志 -->
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-xml">&lt;y1&gt;0.000000&lt;/y1&gt; &lt;x2&gt;1.000000&lt;/x2&gt;</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-xml">&lt;/firstImageInfo&gt;</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-xml">&lt;finderLiveProductShare&gt;...&lt;/finderLiveProductShare&gt;</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-xml">&lt;appinfo&gt;&lt;appname&gt;网页链接&lt;/appname&gt;&lt;/appinfo&gt;</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-chain">🤖 决策推理链路 | 耗时 1225.7ms | RAG命中 3条 | 工具调用 0个</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-ai-msg">💬 AI 回复【好友: 跳起即看白出】: 收到，分享的是 page-mascot 这个网页互动小吉祥物开源项目。这是一套非常可爱的桌面吉物，非常适合放在前端页面增加趣味性！</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:50]</span> <span class="log-info">[INFO] 正在向 [跳起即看白出] 发送回复...</span></div>
+              <div class="log-entry"><span class="log-time">[08:09:56]</span> <span class="log-success-badge">✅ [SUCCESS] 成功回复【跳起即看白出】!</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 2: 回复对象配置
+             =================================================================== -->
+        <section class="tab-pane" id="tab-targets">
+          <div class="content-card">
+            <div class="content-card-title">👥 自动回复目标范围与策略</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">回复模式</label>
+                <select class="form-select" id="sel-target-mode">
+                  <option value="whitelist">仅回复白名单内的好友与群聊 (推荐)</option>
+                  <option value="all_private">回复所有私聊好友 (群聊依然仅限白名单)</option>
+                </select>
+                <span class="form-desc">开启全员回复后，新增好友即可触发自动解答。</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label">群聊回复开关</label>
+                <select class="form-select" id="sel-enable-group">
+                  <option value="false">严格忽略所有群聊 (仅私聊有效)</option>
+                  <option value="true">启用群聊回复 (仅对白名单群或被@触发)</option>
+                </select>
+                <span class="form-desc">建议个人账号保持忽略全部群聊，避免多人群打扰。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="content-card">
+            <div class="content-card-title">
+              📋 通讯录白名单好友与群聊选择
+              <span style="font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 10px;">点击卡片快速选中/取消</span>
+            </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+              <input type="text" class="form-input" id="search-contacts" placeholder="🔍 搜索好友昵称、微信号、备注..." style="flex: 1;">
+              <button class="btn-secondary" id="btn-select-all-contacts">全选</button>
+              <button class="btn-secondary" id="btn-clear-all-contacts">清空</button>
+            </div>
+            <div class="target-list-box" id="target-chips-container">
+              <!-- 动态渲染联系人卡片 -->
+            </div>
+          </div>
+          <div style="text-align: right;">
+            <button class="btn-primary" id="btn-save-targets">💾 保存回复对象配置</button>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 3: 大模型配置 (LLM Config)
+             =================================================================== -->
+        <section class="tab-pane" id="tab-llm">
+          <div class="content-card">
+            <div class="content-card-title">🌐 大语言模型上游 API 服务配置</div>
+            <div class="form-grid-3">
+              <div class="form-group">
+                <label class="form-label">提供商</label>
+                <select class="form-select" id="sel-llm-provider">
+                  <option value="openai">OpenAI Compatible</option>
+                  <option value="deepseek">DeepSeek (深度求索)</option>
+                  <option value="anthropic">Claude (Anthropic)</option>
+                  <option value="qwen">Qwen (通义千问)</option>
+                  <option value="ollama">Ollama 本地大模型</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">模型名称 (Model Name)</label>
+                <input type="text" class="form-input" id="inp-llm-model" value="deepseek-chat">
+              </div>
+              <div class="form-group">
+                <label class="form-label">温度 (Temperature: <span id="val-llm-temp">0.7</span>)</label>
+                <input type="range" min="0" max="1" step="0.05" value="0.7" id="inp-llm-temp" style="margin-top: 8px; accent-color: var(--primary);">
+              </div>
+            </div>
+
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">API Base URL</label>
+                <input type="text" class="form-input" id="inp-llm-base" value="https://api.deepseek.com/v1">
+              </div>
+              <div class="form-group">
+                <label class="form-label">API Key</label>
+                <input type="password" class="form-input" id="inp-llm-key" placeholder="sk-...">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">预设系统设定 (System Prompt Preset)</label>
+              <select class="form-select" id="sel-prompt-preset" style="margin-bottom: 8px;">
+                <option value="default">官方推荐：全能智能秘书</option>
+                <option value="customer_service">专业客服：彬彬有礼、耐心解答业务</option>
+                <option value="concise">极简干练：不讲废话、直接提供核心要点</option>
+                <option value="friend">情感挚友：风趣幽默、亲和拟人</option>
+                <option value="custom">自定义 Prompt</option>
+              </select>
+              <textarea class="form-textarea" id="txt-custom-prompt" rows="5" placeholder="在此输入自定义系统提示词..."></textarea>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+              <button class="btn-secondary" id="btn-test-llm">🧪 测试 API 连通性与测速</button>
+              <button class="btn-primary" id="btn-save-llm">💾 保存大模型配置</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 4: 本地知识库 (RAG)
+             =================================================================== -->
+        <section class="tab-pane" id="tab-rag">
+          <div class="content-card">
+            <div class="content-card-title">📚 本地私有化知识库与文档向量索引 (RAG)</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">是否启用 RAG 知识检索</label>
+                <select class="form-select" id="sel-rag-enabled">
+                  <option value="true">启用 RAG 知识库</option>
+                  <option value="false">关闭 RAG (仅凭大模型知识库)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">知识库文件夹路径</label>
+                <input type="text" class="form-input" id="inp-rag-folder" value="data/knowledge">
+              </div>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="form-group">
+                <label class="form-label">切片大小 (Chunk Size)</label>
+                <input type="number" class="form-input" id="inp-rag-chunk" value="500">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Top-K 召回条数</label>
+                <input type="number" class="form-input" id="inp-rag-topk" value="3">
+              </div>
+              <div class="form-group">
+                <label class="form-label">相似度阈值 (Threshold)</label>
+                <input type="number" step="0.05" class="form-input" id="inp-rag-thresh" value="0.65">
+              </div>
+            </div>
+
+            <div style="margin-top: 12px; padding: 14px; background: rgba(241, 245, 249, 0.7); border-radius: 12px;">
+              <div style="font-size: 12.5px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px;">🔍 知识检索即时测试</div>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" class="form-input" id="inp-rag-test-query" placeholder="输入测试问题，检验召回效果..." style="flex: 1;">
+                <button class="btn-secondary" id="btn-test-rag">执行检索</button>
+              </div>
+              <div id="rag-test-result" style="margin-top: 8px; font-size: 12px; color: var(--text-muted); max-height: 120px; overflow-y: auto;"></div>
+            </div>
+
+            <div style="text-align: right; margin-top: 16px;">
+              <button class="btn-primary" id="btn-save-rag">💾 保存知识库配置并重建索引</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 5: 联系人画像与记忆 (Memory Engine)
+             =================================================================== -->
+        <section class="tab-pane" id="tab-memory">
+          <div class="content-card">
+            <div class="content-card-title">👤 好友立体画像与长期记忆中枢</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">选择联系人</label>
+                <select class="form-select" id="sel-memory-contact">
+                  <option value="">-- 请选择联系人查看画像档案 --</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">关系定位</label>
+                <input type="text" class="form-input" id="inp-contact-rel" placeholder="如：核心客户、同事、密友">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">性格特质与兴趣偏好标签 (逗号分隔)</label>
+              <input type="text" class="form-input" id="inp-contact-traits" placeholder="技术极客, 喜欢简洁, 关注AI硬件">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">长期记忆要点与历史备忘</label>
+              <textarea class="form-textarea" id="txt-contact-notes" rows="4" placeholder="记录该好友的历史习惯、承诺事项等，AI在回复时将动态吸纳该上下文..."></textarea>
+            </div>
+
+            <div style="text-align: right;">
+              <button class="btn-primary" id="btn-save-memory">💾 保存好友画像档案</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 6: 多模态与媒体设置
+             =================================================================== -->
+        <section class="tab-pane" id="tab-multimodal">
+          <div class="content-card">
+            <div class="content-card-title">🎙 语音识别 (ASR) 与视觉图像理解 (Vision)</div>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label class="form-label">Faster-Whisper 语音转写引擎</label>
+                <select class="form-select" id="sel-asr-model">
+                  <option value="small">small (推荐 / 显存适中速度极快)</option>
+                  <option value="base">base (轻量快速)</option>
+                  <option value="medium">medium (高精度识别)</option>
+                  <option value="tiny">tiny (极简)</option>
+                </select>
+                <span class="form-desc">当前运行设备: CUDA (NVIDIA RTX 3060 12GB)</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label">图片识别与视觉解析</label>
+                <select class="form-select" id="sel-ocr-mode">
+                  <option value="local">本地 Windows OCR + 关键词匹配</option>
+                  <option value="vision_llm">多模态大模型 Vision 直传解析</option>
+                  <option value="off">关闭图片解析</option>
+                </select>
+                <span class="form-desc">收到对方发送的截图或相片时自动提取文字并作答。</span>
+              </div>
+            </div>
+            <div style="text-align: right; margin-top: 14px;">
+              <button class="btn-primary" id="btn-save-multimodal">💾 保存多模态设置</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 7: 语音通话智能体 (VoIP Phone Agent)
+             =================================================================== -->
+        <section class="tab-pane" id="tab-voip">
+          <div class="content-card">
+            <div class="content-card-title" style="justify-content: space-between;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span>📞 微信语音电话全双工实时自动接听守护</span>
+                <span class="brand-badge" style="background: rgba(34, 197, 94, 0.12); color: #22C55E;">守护中</span>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn-secondary" id="btn-voip-install-driver" style="font-size: 12px; padding: 6px 12px;">🔊 一键安装 VB-CABLE 驱动</button>
+                <button class="btn-secondary" id="btn-voip-open-mixer" style="font-size: 12px; padding: 6px 12px;">⚙️ 打开 Windows 音量合成器</button>
+              </div>
+            </div>
+
+            <div class="form-grid-3">
+              <div class="form-group">
+                <label class="form-label">TTS 语音合成模型</label>
+                <select class="form-select" id="sel-voip-tts-engine">
+                  <option value="chattts">ChatTTS (拟真笑声 / 喘气口语化) ✅ 已就绪</option>
+                  <option value="qwen3_tts">Qwen3-TTS (高保真克隆 / 极速推理) ✅ 已就绪</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">振铃接听延迟 (秒)</label>
+                <input type="number" class="form-input" id="inp-voip-delay" value="2.5" min="1" max="10">
+              </div>
+              <div class="form-group">
+                <label class="form-label">单次通话最长限制 (分钟)</label>
+                <input type="number" class="form-input" id="inp-voip-max-duration" value="10">
+              </div>
+            </div>
+
+            <!-- 声音克隆区域 -->
+            <div style="padding: 14px; background: rgba(241, 245, 249, 0.7); border-radius: 12px; margin-top: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                  <input type="checkbox" id="chk-voip-clone" checked style="accent-color: var(--primary);">
+                  启用声音克隆 (使用你自己的参考音频，合成专属声线)
+                </label>
+                <button class="btn-glass" id="btn-voip-test-voice" style="font-size: 12px; padding: 5px 12px;">🎧 试听当前克隆声音</button>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" class="form-input" id="inp-voip-ref-audio" placeholder="指定一段 5~15 秒干净参考音频 (.wav / .mp3)..." value="data/voices/ref_sample.wav" style="flex: 1;">
+              </div>
+            </div>
+
+            <div style="text-align: right; margin-top: 14px;">
+              <button class="btn-primary" id="btn-save-voip">💾 保存语音通话配置</button>
+            </div>
+          </div>
+
+          <!-- 实时通话字幕看板 -->
+          <div class="content-card" style="flex: 1; display: flex; flex-direction: column; min-height: 240px;">
+            <div class="content-card-title">💬 实时通话转写与全双工打断监控</div>
+            <div class="console-body" id="voip-call-transcript" style="flex: 1; min-height: 180px;">
+              <div class="log-entry" style="color: var(--text-muted);">[电话智能体就绪] 当白名单好友发起微信语音通话时，将在此实时呈现毫秒级双向对话字幕与全双工打断记录...</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===================================================================
+             TAB 8: 交互测试沙盒
+             =================================================================== -->
+        <section class="tab-pane" id="tab-sandbox">
+          <div class="content-card" style="flex: 1; display: flex; flex-direction: column;">
+            <div class="content-card-title">✏ 智能体全链路决策交互测试沙盒</div>
+            <div class="sandbox-chat-box" id="sandbox-chat-stream">
+              <div class="chat-bubble ai">
+                你好！我是微信智能体测试助手。你可以在下方模拟输入任意微信消息，测试检索 RAG 知识库、匹配好友画像与大模型流式思考全流程。
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 14px;">
+              <input type="text" class="form-input" id="inp-sandbox-query" placeholder="在此输入测试消息，按回车或点击发送..." style="flex: 1;">
+              <button class="btn-primary" id="btn-send-sandbox">🚀 发送测试</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- 浮动 Toast 容器 -->
+  <div id="toast-container"></div>
+
+  <!-- 引入前端核心应用脚本 -->
+  <script src="js/app.js"></script>
+</body>
+</html>
