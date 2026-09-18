@@ -237,6 +237,21 @@ class ProfileEngine:
                 return False
         return False
 
+    @staticmethod
+    def _is_duplicate_fact(candidate: str, existing_list: List[str]) -> bool:
+        """判断事实记忆是否为重复项（支持去标点、空格、大小写归一化及前缀/子串判重）"""
+        cand_clean = re.sub(r'[\s，。、；;,\.!！\?？\-_—\(\)（）\[\]【】]', '', candidate).lower()
+        if not cand_clean:
+            return True
+        for item in existing_list:
+            item_clean = re.sub(r'[\s，。、；;,\.!！\?？\-_—\(\)（）\[\]【】]', '', item).lower()
+            if cand_clean == item_clean:
+                return True
+            # 若新候选事实已被已有事实完全覆盖且信息量不更长，视为重复
+            if len(cand_clean) >= 6 and cand_clean in item_clean:
+                return True
+        return False
+
     def build_profile_from_history(
         self,
         person_id: str,
@@ -244,12 +259,25 @@ class ProfileEngine:
         remark: str = "",
         chat_type: str = "private",
         last_chat_id: str = "",
-        history_messages: Optional[List[Dict[str, Any]]] = None
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        preserve_existing: bool = True
     ) -> ContactProfile:
-        """基于已有历史聊天记录调用大模型全量初始化构建画像"""
+        """基于已有历史聊天记录调用大模型分析构建/增量融合画像（严格保护既有永久记忆）"""
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
+        # 0. 检查是否已有该联系人历史档案，确保记忆永久沉淀不丢失
+        existing_profile: Optional[ContactProfile] = self.load_profile(person_id) if preserve_existing else None
+        existing_facts: List[str] = list(existing_profile.facts) if (existing_profile and existing_profile.facts) else []
+        existing_tags: List[str] = list(existing_profile.tags) if (existing_profile and existing_profile.tags) else []
+        existing_interests: List[str] = list(existing_profile.interests) if (existing_profile and existing_profile.interests) else []
+        existing_refinements: List[Dict[str, Any]] = list(existing_profile.refinements) if (existing_profile and existing_profile.refinements) else []
+
         target_user = last_chat_id or (person_id.replace("group_member:", "") if ":" in person_id else person_id)
+        if not name and existing_profile and existing_profile.name:
+            name = existing_profile.name
+        if not remark and existing_profile and existing_profile.remark:
+            remark = existing_profile.remark
+
         if self.db is not None:
             try:
                 conn = self.db._contact_conn()
@@ -291,28 +319,53 @@ class ProfileEngine:
 
         dialogue_text = "\n".join(dialogue_snippets)
 
-        # 2. 调用大模型提取结构化画像
+        # 2. 调用大模型提取结构化画像 (注入已有事实记忆上下文，要求大模型在已有记忆基础上增量提炼与修正)
         extracted = {}
-        if dialogue_text.strip():
+        if dialogue_text.strip() or existing_facts:
             sys_prompt = (
                 "你是一个专业的人类性格分析与用户画像专家。\n"
-                "请仔细分析以下我与该联系人的历史微信聊天记录，为TA建立立体的用户画像。\n"
+                "请仔细分析我与该联系人的历史微信聊天记录（如有），并结合TA已有的关键事实永久记忆，为TA建立/更新立体的用户画像。\n\n"
+                "【重要：关键事实永久记忆维护准则 - 严防记忆丢失】：\n"
+                "1. 关键事实永久记忆（facts）是该联系人的长期沉淀核心记忆，绝对不得无故遗漏或清空！\n"
+                "2. 请仔细阅读【已有关键事实永久记忆】与【历史聊天记录】：\n"
+                "   - 必须继承保留所有依然成立、真实的既有关键事实；\n"
+                "   - 从历史聊天中挖掘并补充新出现的明确事实（如职业背景、家庭成员、偏好习惯、常用设备、业务痛点等）；\n"
+                "   - 若历史聊天中确凿推翻或纠正了某条既有事实，对其进行精准修正更新；\n"
+                "   - 避免空泛无意义的套话，每条事实必须是具体、可沉淀的事实碎片；\n"
+                "3. 输出的 facts 必须是【继承有效旧记忆 + 融合新发掘记忆】的完整清单。\n\n"
                 "必须严格按照以下 JSON 格式输出，不得包含任何 Markdown 格式或额外说明文本：\n"
                 "{\n"
-                '  "identity": "身份属性简述(如: 潜在客户、企业HR、技术专家、老同学等)",\n'
+                '  "identity": "身份属性简述(如: 亲密伴侣、潜在客户、企业技术专家、老同学等)",\n'
                 '  "tags": ["标签1", "标签2", "标签3"],\n'
-                '  "personality": "性格特点(如: 严谨务实、热情活泼、谨慎慢热等)",\n'
-                '  "communication_style": "沟通习惯与偏好(如: 喜欢分点解答、偏好语音、厌恶推销等)",\n'
+                '  "personality": "性格特点(如: 务实生活化、严谨细致、热情活泼等)",\n'
+                '  "communication_style": "沟通习惯与偏好(如: 偏好直接语音、分点解答等)",\n'
                 '  "interests": ["关注领域1", "关注领域2"],\n'
-                '  "current_focus": "近期正在探讨或关心的核心问题",\n'
-                '  "facts": ["已明确的关键事实1", "已明确的关键事实2"]\n'
+                '  "current_focus": "近期正在探讨或关心的核心问题与事项",\n'
+                '  "facts": ["保留的既有关键事实与新提炼的关键事实清单"]\n'
                 "}"
             )
+
+            user_parts = [f"【联系人昵称/备注】: {name} (备注: {remark})"]
+            if existing_profile:
+                if existing_facts:
+                    facts_bullets = "\n".join([f"- {f}" for f in existing_facts])
+                    user_parts.append(f"【已有关键事实永久记忆清单 (必须保留并在此基础上扩充/核验)】:\n{facts_bullets}")
+                if existing_tags:
+                    user_parts.append(f"【已有标签参考】: {', '.join(existing_tags)}")
+                if existing_interests:
+                    user_parts.append(f"【已有业务/兴趣关注】: {', '.join(existing_interests)}")
+                if existing_profile.identity:
+                    user_parts.append(f"【已知身份角色】: {existing_profile.identity}")
+                if existing_profile.current_focus:
+                    user_parts.append(f"【前期核心事项】: {existing_profile.current_focus}")
+
+            user_parts.append(f"【历史聊天记录】:\n{dialogue_text if dialogue_text else '（暂无更多历史对话文本）'}")
+            user_content = "\n\n".join(user_parts)
 
             res = self.llm_client.chat_completion(
                 messages=[
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": f"【联系人昵称/备注】: {name} (备注: {remark})\n\n【历史聊天记录】:\n{dialogue_text}"}
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.3
             )
@@ -328,26 +381,73 @@ class ProfileEngine:
                 except Exception as ex:
                     print(f"[Profile] 解析大模型画像 JSON 失败: {ex}")
 
-        # 3. 构造并持久化画像对象
+        # 3. 智能融合画像数据（Python 端兜底双重保障，确保永久记忆不丢、新记忆入库）
+        # (1) 融合关键事实
+        merged_facts = list(existing_facts) if (existing_profile and preserve_existing) else []
+        new_facts_candidates = extracted.get("facts") or []
+        added_facts_count = 0
+        for nf in new_facts_candidates:
+            nf_str = str(nf).strip()
+            if nf_str and not self._is_duplicate_fact(nf_str, merged_facts):
+                merged_facts.append(nf_str)
+                added_facts_count += 1
+
+        # (2) 融合标签
+        merged_tags = list(existing_tags) if (existing_profile and preserve_existing) else []
+        for t in (extracted.get("tags") or []):
+            t_str = str(t).strip()
+            if t_str and t_str not in merged_tags:
+                merged_tags.append(t_str)
+        if not merged_tags:
+            merged_tags = ["已建档"] if dialogue_text else ["新联系人"]
+
+        # (3) 融合兴趣领域
+        merged_interests = list(existing_interests) if (existing_profile and preserve_existing) else []
+        for i in (extracted.get("interests") or []):
+            i_str = str(i).strip()
+            if i_str and i_str not in merged_interests:
+                merged_interests.append(i_str)
+
+        # (4) 自完善演进记录追踪
+        refinements = list(existing_refinements) if (existing_profile and preserve_existing) else []
+        if existing_profile and preserve_existing:
+            if dialogue_snippets:
+                refine_note = f"基于 {len(dialogue_snippets)} 条历史聊天记录重新分析画像（新增 {added_facts_count} 条事实，完整保留已有 {len(existing_facts)} 条记忆）"
+            else:
+                refine_note = f"基于历史档案重新融合核验画像记忆（保留已有 {len(existing_facts)} 条记忆）"
+            refinements.append({
+                "time": now_str,
+                "note": refine_note
+            })
+        else:
+            refinements.append({
+                "time": now_str,
+                "note": f"基于 {len(dialogue_snippets)} 条历史聊天记录完成初次全面画像分析" if dialogue_snippets else "初次建立基础画像卡片"
+            })
+
+        # (5) 构造持久化画像对象
+        created_at = (existing_profile.created_at if (existing_profile and existing_profile.created_at and preserve_existing) else "") or now_str
+        interaction_count = max(
+            existing_profile.interaction_count if (existing_profile and preserve_existing) else 0,
+            len(dialogue_snippets) // 2
+        )
+
         profile = ContactProfile(
             person_id=person_id,
             name=name or (remark or person_id),
             remark=remark,
             chat_type=chat_type,
             last_chat_id=last_chat_id,
-            identity=extracted.get("identity") or (remark or "微信联系人"),
-            tags=extracted.get("tags") or (["已建档"] if dialogue_text else ["新联系人"]),
-            personality=extracted.get("personality") or "礼貌友好",
-            communication_style=extracted.get("communication_style") or "偏好直接简明回答",
-            interests=extracted.get("interests") or [],
-            current_focus=extracted.get("current_focus") or "",
-            facts=extracted.get("facts") or [],
-            refinements=[{
-                "time": now_str,
-                "note": f"基于 {len(dialogue_snippets)} 条历史聊天记录完成初次全面画像分析" if dialogue_snippets else "初次建立基础画像卡片"
-            }],
-            interaction_count=len(dialogue_snippets) // 2,
-            created_at=now_str,
+            identity=extracted.get("identity") or (existing_profile.identity if existing_profile else (remark or "微信联系人")),
+            tags=merged_tags,
+            personality=extracted.get("personality") or (existing_profile.personality if existing_profile else "礼貌友好"),
+            communication_style=extracted.get("communication_style") or (existing_profile.communication_style if existing_profile else "偏好直接简明回答"),
+            interests=merged_interests,
+            current_focus=extracted.get("current_focus") or (existing_profile.current_focus if existing_profile else ""),
+            facts=merged_facts,
+            refinements=refinements,
+            interaction_count=interaction_count,
+            created_at=created_at,
             updated_at=now_str,
         )
 

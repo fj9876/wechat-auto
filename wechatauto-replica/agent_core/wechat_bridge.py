@@ -335,8 +335,43 @@ class WeChatBridge:
                 return False, f"移出群成员执行异常: {e}"
 
 
-    def _is_message_for_me_in_group(self, content: str, group_id: str = "") -> Tuple[bool, str]:
-        """判定群消息是否 @ 了自己，并提取剥离@后的纯文本"""
+    @staticmethod
+    def _extract_at_user_list(source_data: Any) -> List[str]:
+        """从微信底层消息 source 字节流/XML 中解析 atuserlist 列表 (官方原生 @ 标记)"""
+        if not source_data:
+            return []
+        text = ""
+        if isinstance(source_data, str):
+            text = source_data
+        elif isinstance(source_data, (bytes, bytearray)):
+            if source_data[:4] == b"\x28\xb5\x2f\xfd":
+                try:
+                    import zstandard
+                    dctx = zstandard.ZstdDecompressor()
+                    text = dctx.decompress(source_data).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+            if not text:
+                try:
+                    text = source_data.decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+        if "<atuserlist>" in text:
+            m = re.search(r'<atuserlist>(.*?)</atuserlist>', text, re.DOTALL)
+            if m:
+                raw_list = m.group(1).strip()
+                raw_list = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', raw_list)
+                return [u.strip() for u in raw_list.split(",") if u.strip()]
+        return []
+
+    def _is_message_for_me_in_group(self, content: str, group_id: str = "", msg_source: Optional[Any] = None) -> Tuple[bool, str]:
+        """判定群消息是否 @ 了自己，并提取剥离@后的纯文本
+        
+        具备多重容错与底层协议保障：
+        1. 微信原生底层 msgsource -> atuserlist 解析 (最高优先级，用户选人@时微信直接写入本机 wxid)
+        2. 常见 AI 别名与自定义触发词匹配 (解决用户手工键盘敲击 @群AI助手、@AI助手、@机器人 等场景)
+        3. 群名片、个人昵称、微信号精准正则匹配 (支持不可见字符过滤与各类特殊空格)
+        """
         if not content:
             return False, ""
 
@@ -353,14 +388,37 @@ class WeChatBridge:
         self_nick = (self._self_info.get("nick_name") or "").strip()
         self_wxid = (self._self_info.get("username") or "").strip()
 
-        # 候选触发词列表
+        # -------------------------------------------------------------
+        # 判定 1: 微信底层原生 msgsource / atuserlist 解析 (最精准权威)
+        # -------------------------------------------------------------
+        if msg_source:
+            at_users = self._extract_at_user_list(msg_source)
+            if self_wxid and self_wxid in at_users:
+                # 原生 @ 了本机 wxid，剥离开头的 @xxx 得到纯净正文
+                clean_text = re.sub(r'^@[^\s\u2000-\u200f\u3000\xa0:]+[\s\u2000-\u200f\u3000\xa0:]*', '', content).strip()
+                return True, clean_text or content
+
+        # -------------------------------------------------------------
+        # 判定 2: 动态触发词列表构建
+        # -------------------------------------------------------------
         triggers = []
         if self_nick:
-            triggers.append(self_nick)
+            clean_nick = re.sub(r'[\s\u2000-\u200f\u3164\ufeff]', '', self_nick)
+            if clean_nick:
+                triggers.append(clean_nick)
         if self_wxid:
             triggers.append(self_wxid)
+
+        # 默认通用 AI 别名触发词（当群成员手工输入 @群AI助手、@AI助手、@机器人 时自动响应）
+        default_ai_triggers = ["群AI助手", "AI助手", "ai助手", "AI机器人", "ai机器人", "机器人", "小助手", "AI", "ai"]
+        for dt in default_ai_triggers:
+            if dt not in triggers:
+                triggers.append(dt)
+
         if self.config.targets.custom_at_triggers:
-            triggers.extend(self.config.targets.custom_at_triggers)
+            for ct in self.config.targets.custom_at_triggers:
+                if ct and ct not in triggers:
+                    triggers.append(ct)
 
         # 若提供了群 ID，尝试获取机器人在该群内的群名片/群昵称
         if group_id and self._db:
@@ -370,14 +428,20 @@ class WeChatBridge:
                     if m.get("username") == self_wxid:
                         gnick = (m.get("nick_name") or "").strip()
                         gremark = (m.get("remark") or "").strip()
-                        if gnick and gnick not in triggers:
-                            triggers.append(gnick)
-                        if gremark and gremark not in triggers:
-                            triggers.append(gremark)
+                        if gnick:
+                            clean_gn = re.sub(r'[\s\u2000-\u200f\u3164\ufeff]', '', gnick)
+                            if clean_gn and clean_gn not in triggers:
+                                triggers.append(clean_gn)
+                        if gremark:
+                            clean_gr = re.sub(r'[\s\u2000-\u200f\u3164\ufeff]', '', gremark)
+                            if clean_gr and clean_gr not in triggers:
+                                triggers.append(clean_gr)
             except Exception:
                 pass
 
-        # 宽松匹配: @昵称\u2005, @昵称 , @昵称:, @昵称：, @昵称\xa0, @昵称\u3000, 甚至紧挨着文本
+        # -------------------------------------------------------------
+        # 判定 3: 宽松正则匹配: @昵称\u2005, @昵称 , @昵称:, @昵称：, @昵称\xa0, @昵称\u3000, 甚至紧挨文本
+        # -------------------------------------------------------------
         for tr in sorted(triggers, key=lambda x: -len(x)):
             if not tr:
                 continue
@@ -388,13 +452,13 @@ class WeChatBridge:
             )
             if pattern.search(content):
                 clean_text = pattern.sub('', content).strip()
-                return True, clean_text
+                return True, clean_text or content
 
-            # 兼容极端情况：@tr 直接贴着中文字符输入，例如 @踮起脚看日出你好
+            # 兼容极端情况：@tr 直接贴着中文字符输入，例如 @群AI助手你好
             direct_prefix = f"@{tr}"
             if content.startswith(direct_prefix):
                 clean_text = content[len(direct_prefix):].lstrip(" :\t\u2005\u3000\xa0")
-                return True, clean_text
+                return True, clean_text or content
 
         return False, content
 
@@ -468,7 +532,7 @@ class WeChatBridge:
         primary = candidates[0] if candidates else username
         return primary, candidates
 
-    def _should_auto_reply(self, username: str, sender_name: str, content: str, has_image: bool = False) -> Tuple[bool, bool, bool, str]:
+    def _should_auto_reply(self, username: str, sender_name: str, content: str, has_image: bool = False, msg_source: Optional[Any] = None) -> Tuple[bool, bool, bool, str]:
         """白名单与群聊@过滤策略判定
 
         Returns:
@@ -495,7 +559,7 @@ class WeChatBridge:
                 return False, True, False, clean_text
 
             # 2. 检查群聊是否设定「仅 @ 才回复」
-            is_at, stripped = self._is_message_for_me_in_group(content, group_id=username)
+            is_at, stripped = self._is_message_for_me_in_group(content, group_id=username, msg_source=msg_source)
             is_at_me = is_at
             clean_text = stripped
 
@@ -610,6 +674,7 @@ class WeChatBridge:
         try:
             username = msg_row.get("username", "")
             raw_content = msg_row.get("content") or ""
+            msg_source = msg_row.get("source")
             if isinstance(raw_content, bytes):
                 raw_content = raw_content.decode("utf-8", errors="ignore")
 
@@ -824,7 +889,7 @@ class WeChatBridge:
             # 3. 过滤规则判定 (白名单、群聊@)
             # -------------------------------------------------------------
             should_reply, is_group, is_at_me, clean_query = self._should_auto_reply(
-                username, sender_name, msg_body, has_image=bool(detected_image_path)
+                username, sender_name, msg_body, has_image=bool(detected_image_path), msg_source=msg_source
             )
             if not should_reply:
                 reason = "群聊消息未 @机器人" if (is_group and self.config.targets.group_at_only and not is_at_me) else "未在自动回复白名单中"

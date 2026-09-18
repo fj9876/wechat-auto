@@ -1186,6 +1186,15 @@ class WeChatAIAgentApp:
         )
         chk_auto_at.pack(side="left", padx=2)
 
+        # 群内 @ 别名触发词输入栏
+        f_custom_at = tk.Frame(right_frame, bg=self.COLOR_CARD)
+        f_custom_at.pack(fill="x", padx=8, pady=(2, 4))
+        tk.Label(f_custom_at, text="群内 @ 别名触发词:", bg=self.COLOR_CARD, fg=self.COLOR_MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        self.var_custom_at = tk.StringVar(value=", ".join(self.config.targets.custom_at_triggers or ["群AI助手", "AI助手", "机器人"]))
+        ent_custom_at = ttk.Entry(f_custom_at, textvariable=self.var_custom_at, font=("Microsoft YaHei UI", 8), width=30)
+        ent_custom_at.pack(side="left", padx=4)
+        tk.Label(f_custom_at, text="(逗号分隔，支持用户手工敲字 @群AI助手 等别名)", bg=self.COLOR_CARD, fg="#64748B", font=("Microsoft YaHei UI", 8)).pack(side="left")
+
         # 鼠标右键设置快捷提示
         g_hint_bar = tk.Frame(right_frame, bg=self.COLOR_CARD)
         g_hint_bar.pack(fill="x", padx=8, pady=(0, 2))
@@ -2020,6 +2029,10 @@ class WeChatAIAgentApp:
         self.config.targets.reply_all_groups = self.var_reply_all_groups.get()
         self.config.targets.group_at_only = self.var_group_at_only.get()
         self.config.targets.group_auto_at_sender = self.var_group_auto_at.get()
+        if hasattr(self, "var_custom_at"):
+            self.config.targets.custom_at_triggers = [
+                t.strip() for t in self.var_custom_at.get().replace("，", ",").split(",") if t.strip()
+            ]
         self.config.save()
         if hasattr(self, "call_agent") and self.call_agent:
             self.call_agent.reload_config(self.config)
@@ -3637,11 +3650,11 @@ class WeChatAIAgentApp:
                     self._render_profile_details(profile)
                     self._load_profiles_into_tree()
                     messagebox.showinfo(
-                        "画像构建成功",
-                        f"已为联系人【{profile.name}】建立专属立体画像！\n\n"
+                        "画像构建与记忆融合成功",
+                        f"已为联系人【{profile.name}】完成历史记录分析与立体画像更新！\n\n"
                         f"- 身份定位: {profile.identity}\n"
                         f"- 性格特质: {profile.personality}\n"
-                        f"- 关键事实: 共提炼 {len(profile.facts)} 条永久事实记忆"
+                        f"- 关键事实: 共沉淀 {len(profile.facts)} 条永久事实记忆 (已智能保留并融合既有记忆)"
                     )
                 self.dispatch_ui(on_done)
             except Exception as e:
@@ -4723,6 +4736,10 @@ class WeChatAIAgentApp:
             self.config.targets.group_at_only = bool(self.var_group_at_only.get())
         if hasattr(self, "var_group_auto_at"):
             self.config.targets.group_auto_at_sender = bool(self.var_group_auto_at.get())
+        if hasattr(self, "var_custom_at"):
+            self.config.targets.custom_at_triggers = [
+                t.strip() for t in self.var_custom_at.get().replace("，", ",").split(",") if t.strip()
+            ]
 
         # 2. 大模型配置与提示词
         if hasattr(self, "var_api_url"):
@@ -5092,6 +5109,8 @@ class WeChatAIAgentApp:
             self.var_group_at_only.set(self.config.targets.group_at_only)
         if hasattr(self, "var_group_auto_at"):
             self.var_group_auto_at.set(self.config.targets.group_auto_at_sender)
+        if hasattr(self, "var_custom_at"):
+            self.var_custom_at.set(", ".join(self.config.targets.custom_at_triggers or ["群AI助手", "AI助手", "机器人"]))
         if hasattr(self, "_render_contacts_tree"):
             self._render_contacts_tree()
         if hasattr(self, "_render_groups_tree"):

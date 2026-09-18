@@ -1918,6 +1918,8 @@ class WeChatDB:
         server_seq = r["server_seq"] if "server_seq" in keys else 0
         sender_id = r["real_sender_id"] if "real_sender_id" in keys else None
 
+        source = r["source"] if "source" in keys else None
+
         sender_username = self._resolve_sender_username(r, user=user, content_str=str(content) if content else "")
         return {
             "local_id": r["local_id"],
@@ -1926,6 +1928,7 @@ class WeChatDB:
             "sender_username": sender_username,
             "create_time": r["create_time"],
             "content": content,
+            "source": source,
             "sort_seq": r["sort_seq"],
             "status": status,
             "origin_source": origin_source,

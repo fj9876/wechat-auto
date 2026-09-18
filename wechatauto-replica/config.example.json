@@ -16,7 +16,7 @@
     "whitelist_groups": ["your_group_id@chatroom"],
     "group_at_only": true,
     "group_auto_at_sender": false,
-    "custom_at_triggers": []
+    "custom_at_triggers": ["群AI助手", "AI助手", "机器人"]
   },
   "rag": {
     "enabled": false,
