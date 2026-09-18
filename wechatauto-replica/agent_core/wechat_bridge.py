@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import collections
+import logging
 import os
 import re
 import threading
@@ -20,6 +21,9 @@ from typing import Dict, Any, List, Optional, Tuple, Callable
 from .config import AppConfig
 from .media_engine import VoiceRecognizer
 from .pipeline import AgentPipeline, PipelineResult
+
+logger = logging.getLogger("WeChatBridge")
+
 
 # 微信系统内置功能号与公众号过滤黑名单
 SYSTEM_ACCOUNTS = {
@@ -912,7 +916,7 @@ class WeChatBridge:
             pass
 
     def _find_wechat4_main_hwnd(self) -> Optional[int]:
-        """精确定位微信 4.x 主窗口句柄 (兼容所有多桌面/无UIA树环境)"""
+        """精确定位微信 4.x / 3.x 主窗口句柄 (兼容所有多桌面/最小化/无UIA树环境)"""
         try:
             import win32gui, win32process, psutil, ctypes
             user32 = ctypes.windll.user32
@@ -920,7 +924,36 @@ class WeChatBridge:
             if h_desk:
                 user32.SetThreadDesktop(h_desk)
 
-            pids = {p.info['pid'] for p in psutil.process_iter(['pid', 'name']) if 'weixin' in (p.info.get('name') or '').lower()}
+            # 1. 快速类名与标题匹配 (毫秒级直达，兼容常见微信主窗口)
+            for cls_name, title_name in [
+                ("Qt51514QWindowIcon", "微信"),
+                ("Qt51514QWindowIcon", "Weixin"),
+                ("Qt51514QWindowIcon", "WeChat"),
+                ("WeChatMainWndForPC", "微信"),
+                ("WeChatMainWndForPC", "WeChat"),
+                (None, "微信"),
+            ]:
+                hwnd = win32gui.FindWindow(cls_name, title_name)
+                if hwnd and win32gui.IsWindow(hwnd):
+                    try:
+                        placement = win32gui.GetWindowPlacement(hwnd)
+                        norm_r = placement[4]
+                        norm_w = norm_r[2] - norm_r[0]
+                        norm_h = norm_r[3] - norm_r[1]
+                    except Exception:
+                        r = win32gui.GetWindowRect(hwnd)
+                        norm_w = r[2] - r[0]
+                        norm_h = r[3] - r[1]
+                    if norm_w > 450 and norm_h > 350:
+                        return hwnd
+
+            # 2. 进程树与桌面窗口枚举兜底定位
+            pids = set()
+            for p in psutil.process_iter(['pid', 'name']):
+                pname = (p.info.get('name') or '').lower()
+                if ('weixin' in pname or 'wechat' in pname) and 'wechatappex' not in pname:
+                    pids.add(p.info['pid'])
+
             if not pids:
                 return None
 
@@ -931,18 +964,36 @@ class WeChatBridge:
                     return True
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 if pid in pids:
-                    rect = win32gui.GetWindowRect(hwnd)
-                    w = rect[2] - rect[0]
-                    h = rect[3] - rect[1]
-                    vis = win32gui.IsWindowVisible(hwnd)
-                    # 微信 4.x 主窗口特征：处于可见状态，宽 > 450，高 > 350
-                    if vis and w > 450 and h > 350:
-                        target_hwnd = hwnd
-                        return False
+                    title = win32gui.GetWindowText(hwnd)
+                    cls = win32gui.GetClassName(hwnd)
+                    # 过滤系统和辅助型通知子窗口
+                    if any(k in cls for k in ['Tray', 'Message', 'IME', 'Display', 'Chrome']):
+                        return True
+
+                    # 针对最小化窗口，通过 WindowPlacement 获取其实际还原后的尺寸，避免因尺寸为 160x28 被误判剔除
+                    try:
+                        placement = win32gui.GetWindowPlacement(hwnd)
+                        norm_r = placement[4]
+                        w = norm_r[2] - norm_r[0]
+                        h = norm_r[3] - norm_r[1]
+                    except Exception:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        w = rect[2] - rect[0]
+                        h = rect[3] - rect[1]
+
+                    if w > 450 and h > 350:
+                        if title in ("微信", "Weixin", "WeChat"):
+                            target_hwnd = hwnd
+                            return False
+                        if not target_hwnd:
+                            target_hwnd = hwnd
                 return True
 
             if h_desk:
-                user32.EnumDesktopWindows(h_desk, ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(enum_cb), 0)
+                try:
+                    user32.EnumDesktopWindows(h_desk, ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(enum_cb), 0)
+                except Exception:
+                    win32gui.EnumWindows(enum_cb, 0)
             else:
                 win32gui.EnumWindows(enum_cb, 0)
 
@@ -961,7 +1012,7 @@ class WeChatBridge:
 
             hwnd = self._find_wechat4_main_hwnd()
             if not hwnd:
-                logger.warning("[WeChatBridge] 未找到运行中的微信 4.x 主窗口")
+                logger.warning("[WeChatBridge] 未找到运行中的微信 4.x/3.x 主窗口")
                 return False
 
             user32 = ctypes.windll.user32
@@ -969,7 +1020,14 @@ class WeChatBridge:
             if h_desk:
                 user32.SetThreadDesktop(h_desk)
 
-            # 1. 窗口位置自适应纠偏 (防止被拖拽到屏幕外负坐标导致物理点击失效)
+            # 1. 先行还原最小化状态并显示窗口，确保获得真实的屏幕布局坐标
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.1)
+            else:
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+            # 2. 窗口位置自适应纠偏 (防止被拖拽到屏幕外负坐标导致物理点击失效)
             rect = win32gui.GetWindowRect(hwnd)
             left, top, right, bottom = rect
             w = right - left
@@ -984,12 +1042,7 @@ class WeChatBridge:
                 w = right - left
                 h = bottom - top
 
-            # 2. 强效置顶与焦点夺取 (采用 HWND_TOPMOST 瞬时置顶，杜绝被 IDE/浏览器/其他窗口遮挡)
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            else:
-                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-
+            # 3. 强效置顶与焦点夺取 (采用 HWND_TOPMOST 瞬时置顶，杜绝被 IDE/浏览器/其他窗口遮挡)
             win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
             user32.SwitchToThisWindow(hwnd, True)
             user32.BringWindowToTop(hwnd)
@@ -1000,25 +1053,25 @@ class WeChatBridge:
             time.sleep(0.12)
 
             try:
-                # 3. 目标会话激活策略:
+                # 4. 目标会话激活策略:
                 # 刚刚发来消息的目标通常正是第一项，点击列表第一项激活当前会话
                 pyautogui.click(left + 160, top + 100)
                 time.sleep(0.08)
 
-                # 4. 点击右侧主聊天窗底部的输入框 (准确定位输入文本区域)
+                # 5. 点击右侧主聊天窗底部的输入框 (准确定位输入文本区域)
                 # 输入框垂直中心约为 bottom - 100，水平中心为 left + 280 + (w - 280) // 2
                 input_x = left + 280 + (w - 280) // 2
                 input_y = bottom - 100
                 pyautogui.click(input_x, input_y)
                 time.sleep(0.08)
 
-                # 5. 剪贴板注入完整多行文本并粘贴
+                # 6. 剪贴板注入完整多行文本并粘贴
                 pyperclip.copy(reply_text)
                 time.sleep(0.05)
                 pyautogui.hotkey('ctrl', 'v')
                 time.sleep(0.08)
 
-                # 6. 发送：回车发送 + 辅以右下角发送按钮物理坐标双重兜底保障
+                # 7. 发送：回车发送 + 辅以右下角发送按钮物理坐标双重兜底保障
                 pyautogui.press('enter')
                 time.sleep(0.06)
 
@@ -1029,7 +1082,7 @@ class WeChatBridge:
 
                 return True
             finally:
-                # 7. 恢复窗口非置顶，保持用户正常的窗口层级体验
+                # 8. 恢复窗口非置顶，保持用户正常的窗口层级体验
                 win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
 
         except Exception as e:
@@ -1054,7 +1107,13 @@ class WeChatBridge:
             })
 
             # 优先采用微信 4.x 极速原生物理发送引擎 (绕过失效的旧版 OCR/UIA 驱动)
-            fast_ok = self._send_via_wechat4_fast(best_target, reply_text)
+            fast_ok = False
+            try:
+                fast_ok = self._send_via_wechat4_fast(best_target, reply_text)
+            except Exception as e:
+                logger.warning(f"[WeChatBridge] 微信极速发送调用异常: {e}", exc_info=True)
+                fast_ok = False
+
             if fast_ok:
                 self._last_send_ts = time.time()
                 now = time.time()
