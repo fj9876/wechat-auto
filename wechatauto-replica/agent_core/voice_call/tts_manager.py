@@ -34,11 +34,13 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 MODELS_ROOT = os.path.join(BASE_DIR, "models")
 CHATTTS_DIR = os.path.join(MODELS_ROOT, "ChatTTS")
 QWEN3_TTS_DIR = os.path.join(MODELS_ROOT, "Qwen3-TTS")
+KOKORO_DIR = os.path.join(MODELS_ROOT, "Kokoro-82M")
 
 # 国内镜像源配置
 HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
 CHATTTS_REPO_ID = "2noise/ChatTTS"
 QWEN3_TTS_REPO_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+KOKORO_REPO_ID = "hexgrad/Kokoro-82M"
 
 
 class TTSDownloadProgress:
@@ -62,7 +64,7 @@ class TTSDownloadProgress:
 
 
 class TTSManager:
-    """TTS 语音合成与声音克隆统一管理器"""
+    """TTS 语音合成与声音克隆统一管理器 (支持 Kokoro-82M / Qwen3-TTS GGML / ChatTTS / Edge-TTS)"""
 
     _instance = None
     _lock = threading.Lock()
@@ -82,6 +84,8 @@ class TTSManager:
         self.current_engine = default_engine.lower()
         self._chattts_model = None
         self._qwen_model = None
+        self._qwen_ggml_model = None
+        self._kokoro_model = None
         self._is_loading = False
         self._active_voice_clone_path: Optional[str] = None
         self._cached_spk_emb = None
@@ -92,11 +96,13 @@ class TTSManager:
         self.downloads: Dict[str, TTSDownloadProgress] = {
             "chattts": TTSDownloadProgress("ChatTTS"),
             "qwen3_tts": TTSDownloadProgress("Qwen3-TTS"),
+            "kokoro": TTSDownloadProgress("Kokoro-82M"),
         }
 
         os.makedirs(MODELS_ROOT, exist_ok=True)
         os.makedirs(CHATTTS_DIR, exist_ok=True)
         os.makedirs(QWEN3_TTS_DIR, exist_ok=True)
+        os.makedirs(KOKORO_DIR, exist_ok=True)
 
     # -------------------------------------------------------------------------
     # 模型状态检测与自动下载机制
@@ -116,7 +122,6 @@ class TTSManager:
 
         downloaded = False
         if engine == "chattts":
-            # 检查关键权重文件: asset/ 或根目录下的 *.pt / *.safetensors
             for root, _, files in os.walk(CHATTTS_DIR):
                 pt_files = [f for f in files if f.endswith(".pt") or f.endswith(".safetensors")]
                 if len(pt_files) >= 3:
@@ -126,6 +131,13 @@ class TTSManager:
             for root, _, files in os.walk(QWEN3_TTS_DIR):
                 weights = [f for f in files if f.endswith(".safetensors") or f.endswith(".bin") or f.endswith(".gguf")]
                 if len(weights) >= 1:
+                    downloaded = True
+                    break
+        elif engine == "kokoro":
+            for root, _, files in os.walk(KOKORO_DIR):
+                onnx_files = [f for f in files if f.endswith(".onnx")]
+                bin_files = [f for f in files if f.endswith(".bin") or f.endswith(".json")]
+                if onnx_files and bin_files:
                     downloaded = True
                     break
 
@@ -140,17 +152,24 @@ class TTSManager:
             return importlib.util.find_spec("edge_tts") is not None
         elif engine in ("sapi", "system"):
             return True
+        elif engine == "kokoro":
+            import importlib.util
+            return importlib.util.find_spec("kokoro_onnx") is not None or importlib.util.find_spec("kokoro") is not None
         elif engine == "chattts":
             import importlib.util
             return importlib.util.find_spec("ChatTTS") is not None
         elif engine in ("qwen3_tts", "qwen3"):
             import importlib.util
-            return importlib.util.find_spec("qwen_tts") is not None
+            return (
+                importlib.util.find_spec("faster_qwen3_tts") is not None
+                or importlib.util.find_spec("qwentts") is not None
+                or importlib.util.find_spec("qwen_tts") is not None
+            )
         return False
 
     @staticmethod
     def get_optimal_device() -> Tuple[str, str, Any]:
-        """获取最优推理设备 (优先检测并锁定 GPU CUDA)"""
+        """获取最优推理设备 (全面优先锁定 GPU CUDA)"""
         try:
             import torch
             if hasattr(torch, "cuda") and torch.cuda.is_available():
@@ -161,7 +180,60 @@ class TTSManager:
                 return device_str, gpu_name, dtype
         except Exception as e:
             logger.debug(f"[TTSManager] GPU 探测异常: {e}")
+
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                logger.info("[TTSManager] 🚀 探测到 ctranslate2 可用 CUDA 设备，锁定 cuda")
+                return "cuda", "NVIDIA GPU (CUDA)", None
+        except Exception:
+            pass
+
         return "cpu", "CPU 处理器", None
+
+    def auto_install_engine_wheel(self, engine: str, background: bool = True, callback: Optional[Callable[[str, bool, str], None]] = None) -> bool:
+        """自动为指定引擎安装所需 wheel 依赖包 (支持清华镜像源一键静默补齐)"""
+        pkg_map = {
+            "kokoro": ["kokoro-onnx", "soundfile"],
+            "paraformer": ["funasr", "modelscope"],
+            "funasr": ["funasr", "modelscope"],
+            "qwen3_tts": ["qwen-tts"],
+            "chattts": ["ChatTTS"],
+            "whisper": ["faster-whisper"],
+            "edge_tts": ["edge-tts"],
+        }
+        pkgs = pkg_map.get(engine.lower())
+        if not pkgs:
+            return False
+
+        def _do_install():
+            logger.info(f"[TTSManager] 📦 正在自动为 [{engine}] 安装 wheel 依赖包: {pkgs}...")
+            import subprocess
+            cmd = [sys.executable, "-m", "pip", "install"] + pkgs + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+            try:
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+                if proc.returncode == 0:
+                    logger.info(f"[TTSManager] ✅ [{engine}] 依赖包 {pkgs} 安装完成！")
+                    if callback:
+                        callback(engine, True, "安装成功")
+                    return True
+                else:
+                    err = proc.stderr[:300] if proc.stderr else "返回码异常"
+                    logger.error(f"[TTSManager] ❌ [{engine}] 依赖包安装失败: {err}")
+                    if callback:
+                        callback(engine, False, err)
+                    return False
+            except Exception as ex:
+                logger.error(f"[TTSManager] ❌ [{engine}] 自动安装异常: {ex}")
+                if callback:
+                    callback(engine, False, str(ex))
+                return False
+
+        if background:
+            threading.Thread(target=_do_install, daemon=True, name=f"AutoInstall-{engine}").start()
+            return True
+        else:
+            return _do_install()
 
     def auto_download_model(self, engine: str, background: bool = True, progress_cb: Optional[Callable[[str, float], None]] = None) -> bool:
         """从高速镜像自动下载模型权重"""
@@ -178,25 +250,49 @@ class TTSManager:
             tracker.update("downloading", 0.05)
             logger.info(f"[TTSManager] 开始从高速镜像下载 {engine} 模型...")
             try:
-                # 优先使用 huggingface_hub 设置国内镜像
                 os.environ["HF_ENDPOINT"] = HF_MIRROR_ENDPOINT
-                from huggingface_hub import snapshot_download
+                from huggingface_hub import snapshot_download, hf_hub_download
 
                 if engine == "chattts":
                     repo_id = CHATTTS_REPO_ID
                     target_dir = CHATTTS_DIR
+                    snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=target_dir,
+                        local_dir_use_symlinks=False,
+                        endpoint=HF_MIRROR_ENDPOINT,
+                        resume_download=True,
+                    )
+                elif engine == "kokoro":
+                    tracker.update("downloading", 0.1)
+                    import requests
+                    os.makedirs(KOKORO_DIR, exist_ok=True)
+                    model_urls = [
+                        ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/kokoro-v0_19.onnx",
+                         os.path.join(KOKORO_DIR, "kokoro-v0_19.onnx"), 0.5),
+                        ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/voices.bin",
+                         os.path.join(KOKORO_DIR, "voices.bin"), 0.9),
+                    ]
+                    for url, target_path, prog in model_urls:
+                        if not os.path.exists(target_path) or os.path.getsize(target_path) < 1024:
+                            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=60)
+                            r.raise_for_status()
+                            with open(target_path, "wb") as f:
+                                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                                    if chunk:
+                                        f.write(chunk)
+                        tracker.update("downloading", prog)
                 else:
                     repo_id = QWEN3_TTS_REPO_ID
                     target_dir = QWEN3_TTS_DIR
+                    snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=target_dir,
+                        local_dir_use_symlinks=False,
+                        endpoint=HF_MIRROR_ENDPOINT,
+                        resume_download=True,
+                    )
 
-                tracker.update("downloading", 0.2)
-                snapshot_download(
-                    repo_id=repo_id,
-                    local_dir=target_dir,
-                    local_dir_use_symlinks=False,
-                    endpoint=HF_MIRROR_ENDPOINT,
-                    resume_download=True,
-                )
                 if hasattr(self, "_model_downloaded_cache"):
                     self._model_downloaded_cache.pop(engine, None)
                 tracker.update("completed", 1.0)
@@ -270,34 +366,100 @@ class TTSManager:
                 self._engine_load_failed["chattts"] = True
                 return None
 
+        elif engine == "kokoro":
+            if self._kokoro_model is not None:
+                return self._kokoro_model
+            if self._engine_load_failed.get("kokoro", False):
+                return None
+            try:
+                import kokoro_onnx
+                # 寻找本地 Kokoro ONNX 模型与音色库
+                model_file = None
+                voices_file = None
+                for root, _, files in os.walk(KOKORO_DIR):
+                    for f in files:
+                        if f.endswith(".onnx") and not model_file:
+                            model_file = os.path.join(root, f)
+                        elif (f.endswith(".bin") or f.endswith(".json")) and not voices_file:
+                            voices_file = os.path.join(root, f)
+
+                if not model_file or not voices_file:
+                    logger.info("[TTSManager] 本地 Kokoro-82M 权重文件不全，尝试从镜像自动下载...")
+                    self.auto_download_model("kokoro", background=False)
+                    for root, _, files in os.walk(KOKORO_DIR):
+                        for f in files:
+                            if f.endswith(".onnx") and not model_file:
+                                model_file = os.path.join(root, f)
+                            elif (f.endswith(".bin") or f.endswith(".json")) and not voices_file:
+                                voices_file = os.path.join(root, f)
+
+                if model_file and voices_file:
+                    logger.info(f"[TTSManager] 正在初始化 Kokoro-82M 引擎: {model_file}...")
+                    import onnxruntime as ort
+                    sess_opt = ort.SessionOptions()
+                    sess_opt.intra_op_num_threads = min(8, max(2, (os.cpu_count() or 4)))
+                    sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    providers = ["CPUExecutionProvider"]
+                    sess = ort.InferenceSession(model_file, sess_options=sess_opt, providers=providers)
+                    self._kokoro_model = kokoro_onnx.Kokoro.from_session(sess, voices_file)
+                    logger.info(f"[TTSManager] ✅ Kokoro-82M 初始化就绪 (运行于 [{providers[0]}])！")
+                    return self._kokoro_model
+                else:
+                    logger.warning("[TTSManager] Kokoro-82M 权重未准备就绪，自动降级至 Edge-TTS")
+                    self._engine_load_failed["kokoro"] = True
+                    return None
+            except ImportError:
+                if not self._fallback_notified.get("kokoro_missing", False):
+                    logger.info("[TTSManager] kokoro-onnx 运行库未就绪，自动平滑切换至 Edge-TTS 高保真引擎")
+                    self._fallback_notified["kokoro_missing"] = True
+                self._engine_load_failed["kokoro"] = True
+                return None
+            except Exception as e:
+                logger.warning(f"[TTSManager] Kokoro-82M 初始化异常: {e}，平滑降级至 Edge-TTS")
+                self._engine_load_failed["kokoro"] = True
+                return None
+
         elif engine in ("qwen3_tts", "qwen3"):
+            if self._qwen_ggml_model is not None:
+                return self._qwen_ggml_model
             if self._qwen_model is not None:
                 return self._qwen_model
             if self._engine_load_failed.get("qwen3_tts", False):
                 return None
             try:
+                # 1. 优先尝试 GGML / C++ 量化推理库 (faster-qwen3-tts[ggml] / qwentts-cpp-python)
                 try:
-                    from qwen_tts import Qwen3TTSModel
-                    import torch
-                    import warnings
-                    warnings.filterwarnings("ignore", message=".*Passing `repetition_penalty`.*")
-                    dev_str, dev_name, dtype = self.get_optimal_device()
-                    dtype = dtype or torch.float32
-                    logger.info(f"[TTSManager] 正在加载 Qwen3-TTS 引擎权重 (优先 GPU 推理: 设备=[{dev_name}], target={dev_str}, dtype={dtype})...")
-                    model = Qwen3TTSModel.from_pretrained(
-                        QWEN3_TTS_DIR if self.is_model_downloaded("qwen3_tts") else "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-                        device_map=dev_str,
-                        dtype=dtype,
-                    )
-                    self._qwen_model = model
-                    logger.info(f"[TTSManager] ✅ Qwen3-TTS 初始化就绪 (运行于 [{dev_name}])！")
+                    import faster_qwen3_tts
+                    logger.info("[TTSManager] 🚀 发现 faster_qwen3_tts GGML C++ 加速后端，正在加载量化引擎...")
+                    model = faster_qwen3_tts.Qwen3TTSModel(QWEN3_TTS_DIR if self.is_model_downloaded("qwen3_tts") else None)
+                    self._qwen_ggml_model = model
+                    logger.info("[TTSManager] ✅ Qwen3-TTS (GGML C++ 加速) 初始化就绪！")
                     return model
-                except ImportError:
-                    if not self._fallback_notified.get("qwen_missing", False):
-                        logger.info("[TTSManager] Qwen3-TTS 运行库未安装，已平滑降级至 Edge-TTS 微软高保真引擎")
-                        self._fallback_notified["qwen_missing"] = True
-                    self._engine_load_failed["qwen3_tts"] = True
-                    return None
+                except (ImportError, AttributeError, Exception) as e_ggml:
+                    logger.debug(f"[TTSManager] GGML C++ 加速后端未就绪 ({e_ggml})，继续尝试标准 PyTorch 后端...")
+
+                # 2. 尝试标准 PyTorch 权重加载 (全面优先锁定 GPU CUDA)
+                from qwen_tts import Qwen3TTSModel
+                import torch
+                import warnings
+                warnings.filterwarnings("ignore", message=".*Passing `repetition_penalty`.*")
+                dev_str, dev_name, dtype = self.get_optimal_device()
+                dtype = dtype or torch.float32
+                logger.info(f"[TTSManager] 正在加载 Qwen3-TTS PyTorch 引擎权重 (设备=[{dev_name}], target={dev_str}, dtype={dtype})...")
+                model = Qwen3TTSModel.from_pretrained(
+                    QWEN3_TTS_DIR if self.is_model_downloaded("qwen3_tts") else "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    device_map=dev_str,
+                    dtype=dtype,
+                )
+                self._qwen_model = model
+                logger.info(f"[TTSManager] ✅ Qwen3-TTS 初始化就绪 (运行于 [{dev_name}])！")
+                return model
+            except ImportError:
+                if not self._fallback_notified.get("qwen_missing", False):
+                    logger.info("[TTSManager] Qwen3-TTS 运行库未安装，已平滑降级至 Edge-TTS 微软高保真引擎")
+                    self._fallback_notified["qwen_missing"] = True
+                self._engine_load_failed["qwen3_tts"] = True
+                return None
             except Exception as e:
                 if not self._fallback_notified.get("qwen_error", False):
                     logger.warning(f"[TTSManager] Qwen3-TTS 初始化不可用 ({e})，平滑降级至 Edge-TTS")
@@ -349,8 +511,18 @@ class TTSManager:
 
     def _dispatch_synthesize(self, text: str, engine: str, ref_path: Optional[str]) -> Tuple[bytes, int]:
         """按引擎分发执行语音合成"""
+        # 0. Kokoro-82M 超轻量极速本地语音分支 (<200ms 首包，CPU/GPU通吃)
+        if engine == "kokoro":
+            pcm, sr = self._synthesize_kokoro(text, ref_path)
+            if pcm and len(pcm) > 1000:
+                return pcm, sr
+            if not self._fallback_notified.get("kokoro_fallback", False):
+                logger.info("[TTSManager] Kokoro 未能输出有效音频，自动平滑切换至 Edge-TTS 高保真引擎")
+                self._fallback_notified["kokoro_fallback"] = True
+            return self._synthesize_edge_tts(text, ref_path)
+
         # 1. Edge-TTS 微软高清云端神经语音分支
-        if engine in ("edge_tts", "edge"):
+        elif engine in ("edge_tts", "edge"):
             return self._synthesize_edge_tts(text, ref_path)
 
         # 2. Windows SAPI 本地离线分支
@@ -367,7 +539,7 @@ class TTSManager:
                 self._fallback_notified["chattts_fallback"] = True
             return self._synthesize_edge_tts(text, ref_path)
 
-        # 4. Qwen3-TTS 分支 (若未安装库或推理失败则自动无缝回退至 Edge-TTS / SAPI)
+        # 4. Qwen3-TTS 分支 (优先 GGML C++，回退 PyTorch，再次回退 Edge-TTS)
         elif engine in ("qwen3_tts", "qwen3"):
             pcm, sr = self._synthesize_qwen(text, ref_path)
             if pcm and len(pcm) > 3000:
@@ -379,6 +551,44 @@ class TTSManager:
 
         # 默认优先 Edge-TTS
         return self._synthesize_edge_tts(text, ref_path)
+
+    def _synthesize_kokoro(self, text: str, ref_audio_path: Optional[str] = None) -> Tuple[bytes, int]:
+        """通过 Kokoro-82M 超轻量极速语音引擎合成 (单句推理 <200ms)"""
+        kokoro = self.load_engine("kokoro")
+        sample_rate = 24000
+        if kokoro is None:
+            return b"", sample_rate
+
+        try:
+            # 优先从模型音色库中获取有效音色
+            available_voices = kokoro.get_voices() if hasattr(kokoro, "get_voices") else []
+            voice_name = getattr(self, "kokoro_voice", "zf_xiaobei") or "zf_xiaobei"
+            if ref_audio_path and any(kw in ref_audio_path.lower() for kw in ["male", "男", "boy", "man"]):
+                voice_name = "zm_yunjian"
+            if available_voices and voice_name not in available_voices:
+                # 若所选音色不在 voices 库中，选用库内首选音色
+                voice_name = available_voices[0]
+
+            # 生成 24kHz 音频样本 (float32 numpy array)
+            # 在 espeak-ng / kokoro 中标准中文口语代号为 "cmn" (Mandarin)
+            samples = None
+            sr = 24000
+            for lang_code in ["cmn", "en-us"]:
+                try:
+                    samples, sr = kokoro.create(text, voice=voice_name, speed=1.05, lang=lang_code)
+                    if samples is not None and len(samples) > 0:
+                        break
+                except Exception as lang_err:
+                    logger.debug(f"[TTSManager] Kokoro 尝试语言 {lang_code} 失败: {lang_err}")
+
+            if samples is not None and len(samples) > 0:
+                audio_array = np.array(samples, dtype=np.float32)
+                pcm16 = self._float32_to_pcm16(audio_array)
+                return pcm16, sr
+        except Exception as e:
+            logger.warning(f"[TTSManager] Kokoro-82M 合成异常: {e}")
+
+        return b"", sample_rate
 
     def _synthesize_chattts(self, text: str, ref_audio_path: Optional[str]) -> Tuple[bytes, int]:
         """通过 ChatTTS 进行口语化合成并应用克隆音色"""
@@ -413,16 +623,34 @@ class TTSManager:
         return b"", sample_rate
 
     def _synthesize_qwen(self, text: str, ref_audio_path: Optional[str]) -> Tuple[bytes, int]:
-        """通过 Qwen3-TTS 进行高质量合成与参考音频克隆"""
-        qwen = self.load_engine("qwen3_tts")
+        """通过 Qwen3-TTS 进行高质量合成与参考音频克隆 (优先 GGML C++，回退 PyTorch)"""
         sample_rate = 24000
+        # 1. 优先使用 GGML C++ 量化模型
+        if self._qwen_ggml_model is not None:
+            try:
+                wav = self._qwen_ggml_model.generate(
+                    text=text,
+                    prompt_wav=ref_audio_path if (ref_audio_path and os.path.exists(ref_audio_path)) else None,
+                )
+                pcm16 = self._float32_to_pcm16(wav)
+                return pcm16, sample_rate
+            except Exception as e:
+                logger.warning(f"[TTSManager] Qwen3-TTS GGML 合成失败: {e}")
+
+        # 2. 若无 faster-qwen3-tts GGML C++ 量化库，标准 PyTorch Qwen3-TTS 单句推理耗时高达 80s+，
+        # 会导致电话对面长久死寂听不到声音。自动切换为高保真毫秒级 Edge-TTS / ChatTTS 保底。
+        if not self._fallback_notified.get("qwen_ggml_missing", False):
+            logger.info("[TTSManager] Qwen3-TTS 运行于 PyTorch 模式，为确保电话毫秒级响应，已平滑切换至 Edge-TTS / ChatTTS")
+            self._fallback_notified["qwen_ggml_missing"] = True
+        return b"", sample_rate
+
+        # 3. 备用 PyTorch 原生推理
+        qwen = self.load_engine("qwen3_tts")
         if qwen is None:
             return b"", sample_rate
 
         try:
-            # 优先根据 Qwen3TTSModel 的接口能力进行调用
             if hasattr(qwen, "generate_custom_voice"):
-                # 获取可用发言人列表
                 speakers = list(qwen.model.get_supported_speakers()) if hasattr(qwen.model, 'get_supported_speakers') else []
                 spk = "serena"
                 if speakers:

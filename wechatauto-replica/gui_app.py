@@ -4889,7 +4889,9 @@ class WeChatAIAgentApp:
                 cfg.whitelist_groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
             if hasattr(vb, "var_tts_engine"):
                 eng_str = vb.var_tts_engine.get().lower()
-                if "edge" in eng_str:
+                if "kokoro" in eng_str:
+                    cfg.tts_engine = "kokoro"
+                elif "edge" in eng_str:
                     cfg.tts_engine = "edge_tts"
                 elif "sapi" in eng_str:
                     cfg.tts_engine = "sapi"
@@ -4897,6 +4899,12 @@ class WeChatAIAgentApp:
                     cfg.tts_engine = "chattts"
                 else:
                     cfg.tts_engine = "qwen3_tts"
+            if hasattr(vb, "var_stt_engine"):
+                stt_str = vb.var_stt_engine.get().lower()
+                if "paraformer" in stt_str:
+                    cfg.stt_engine = "paraformer"
+                else:
+                    cfg.stt_engine = "faster_whisper"
             if hasattr(vb, "var_clone_enabled"):
                 cfg.voice_clone_enabled = bool(vb.var_clone_enabled.get())
             if hasattr(vb, "var_clone_path"):
@@ -5232,14 +5240,22 @@ class WeChatAIAgentApp:
             if hasattr(vb, "var_whitelist_groups"): vb.var_whitelist_groups.set(", ".join(cfg.whitelist_groups))
             if hasattr(vb, "var_tts_engine"):
                 eng_val = cfg.tts_engine.lower()
-                if "edge" in eng_val:
+                if "kokoro" in eng_val:
+                    vb.var_tts_engine.set("Kokoro-82M (超轻量 82M / 极速低延迟 / CPU首选)")
+                elif "edge" in eng_val:
                     vb.var_tts_engine.set("Edge-TTS (微软高保真拟真 / 推荐)")
                 elif "sapi" in eng_val:
                     vb.var_tts_engine.set("Windows SAPI (本地系统语音 / 离线免配置)")
                 elif "chattts" in eng_val:
                     vb.var_tts_engine.set("ChatTTS (口语化拟真 / 喘气笑声)")
                 else:
-                    vb.var_tts_engine.set("Qwen3-TTS (高保真多语言 / 极速推理)")
+                    vb.var_tts_engine.set("Qwen3-TTS (GGML C++ 量化 / 高保真多语言)")
+            if hasattr(vb, "var_stt_engine"):
+                stt_val = getattr(cfg, "stt_engine", "paraformer").lower()
+                if "paraformer" in stt_val:
+                    vb.var_stt_engine.set("FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)")
+                else:
+                    vb.var_stt_engine.set("Faster-Whisper (全语种多规格 / 基础成熟)")
             if hasattr(vb, "var_clone_enabled"): vb.var_clone_enabled.set(cfg.voice_clone_enabled)
             if hasattr(vb, "var_clone_path"): vb.var_clone_path.set(cfg.voice_clone_audio_path)
             if hasattr(vb, "var_answer_delay"): vb.var_answer_delay.set(cfg.auto_answer_delay_sec)
@@ -5247,6 +5263,7 @@ class WeChatAIAgentApp:
             if hasattr(vb, "var_barge_in"): vb.var_barge_in.set(cfg.barge_in_enabled)
             if hasattr(vb, "var_in_dev"): vb.var_in_dev.set(cfg.virtual_input_device)
             if hasattr(vb, "var_out_dev"): vb.var_out_dev.set(cfg.virtual_output_device)
+            if hasattr(vb, "_update_stt_status_ui"): vb._update_stt_status_ui()
             if hasattr(vb, "_update_tts_status_ui"): vb._update_tts_status_ui()
 
     # -------------------------------------------------------------------------

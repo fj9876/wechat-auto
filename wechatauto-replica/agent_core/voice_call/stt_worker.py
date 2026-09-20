@@ -20,8 +20,24 @@ from typing import Optional, Callable
 
 logger = logging.getLogger("STTWorker")
 
+class FunASRLoggingFilter(logging.Filter):
+    """静默 FunASR 官方源码在 download_model_from_hub 中硬编码打印的无害 trust_remote_code 告警"""
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return "trust_remote_code" not in record.getMessage()
+        except Exception:
+            return True
+
+try:
+    logging.getLogger().addFilter(FunASRLoggingFilter())
+except Exception:
+    pass
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
+
+
+PARAFORMER_DIR = os.path.join(MODELS_DIR, "FunASR")
 
 
 def _resolve_model_path(model_name: str) -> str:
@@ -43,8 +59,54 @@ def _resolve_model_path(model_name: str) -> str:
     return clean_name
 
 
+def _resolve_paraformer_path(model_name: str = "paraformer-zh") -> str:
+    """优先从本地 models/ 目录或 ModelScope 缓存定位离线 FunASR Paraformer 模型"""
+    clean_name = (model_name or "paraformer-zh").strip()
+    candidates = [
+        os.path.join(PARAFORMER_DIR, clean_name),
+        os.path.join(MODELS_DIR, clean_name),
+        os.path.join(MODELS_DIR, "paraformer-zh"),
+        os.path.join(MODELS_DIR, "paraformer"),
+    ]
+    for p in candidates:
+        if os.path.isdir(p) and (
+            os.path.exists(os.path.join(p, "model.pt"))
+            or os.path.exists(os.path.join(p, "model.onnx"))
+            or os.path.exists(os.path.join(p, "config.yaml"))
+        ):
+            logger.info(f"[STTWorker] 命中本地离线 Paraformer 模型路径: {p}")
+            return p
+
+    # 优先检测 ModelScope 缓存目录
+    try:
+        cache_root = os.path.expanduser("~/.cache/modelscope")
+        if os.path.isdir(cache_root):
+            for root, _, files in os.walk(cache_root):
+                if "paraformer" in root.lower() and ("model.pt" in files or "model.onnx" in files):
+                    logger.info(f"[STTWorker] 命中 ModelScope 缓存 Paraformer 路径: {root}")
+                    return root
+    except Exception:
+        pass
+
+    # 返回 ModelScope 或 Hugging Face 标识符
+    if clean_name == "paraformer-zh":
+        return "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+    return clean_name
+
+
 class STTWorker:
     """实时语音识别工作线程 (双阶段自适应能量门限 + Silero VAD 深度学习人声判别)"""
+
+    @staticmethod
+    def _resolve_paraformer_path(model_name: str = "paraformer-zh") -> str:
+        """解析并返回 Paraformer 模型路径或标识符"""
+        return _resolve_paraformer_path(model_name)
+
+    @staticmethod
+    def is_paraformer_downloaded(model_name: str = "paraformer-zh") -> bool:
+        """检查 Paraformer 模型文件是否已存在于本地 models/ 目录或 ModelScope 缓存中"""
+        resolved = _resolve_paraformer_path(model_name)
+        return os.path.isdir(resolved)
 
     def __init__(
         self,
@@ -55,9 +117,13 @@ class STTWorker:
         is_ai_speaking_fn: Optional[Callable[[], bool]] = None,
         barge_in_enabled: bool = False,
         acoustic_classifier: Optional[Any] = None,
+        stt_engine: str = "paraformer",
+        paraformer_model_name: str = "paraformer-zh",
     ):
         self.model_name = whisper_model_name
         self.device = device
+        self.stt_engine = (stt_engine or "paraformer").lower()
+        self.paraformer_model_name = paraformer_model_name or "paraformer-zh"
         self.on_speech_started = on_speech_started
         self.on_transcription = on_transcription
         self.is_ai_speaking_fn = is_ai_speaking_fn
@@ -65,6 +131,7 @@ class STTWorker:
         self.acoustic_classifier = acoustic_classifier
 
         self._whisper_model = None
+        self._paraformer_model = None
         self._vad_model = None
         self._audio_queue: queue.Queue = queue.Queue()
         self._running = False
@@ -81,8 +148,8 @@ class STTWorker:
         self._consecutive_silence_frames = 0
         self._noise_floor = 300.0  # 动态自适应底噪
         self._min_energy_threshold = 800.0  # 基础人声能量底线 (排除轻微杂音、电流声与呼吸音)
-        self._min_speech_duration = 0.45  # 最短有效人声时长 (秒，排除瞬态噪点)
-        self._silence_timeout = 0.55  # 极速电话静音断句超时 (0.55秒，兼顾自然停顿与极速响应)
+        self._min_speech_duration = 0.35  # 最短有效人声时长 (秒，Paraformer 支持更短促语音)
+        self._silence_timeout = 0.50  # 极速电话静音断句超时 (0.50秒)
 
     def _get_vad_model(self):
         """获取或初始化 Silero VAD 深度学习模型 (基于 ONNX Runtime C++ 推理，单帧延迟 <0.5ms)"""
@@ -96,11 +163,8 @@ class STTWorker:
                 self._vad_model = None
         return self._vad_model
 
-    def initialize_model(self):
-        """初始化 Faster-Whisper 与 Silero VAD 模型 (优先离线秒级载入)"""
-        # 预热 Silero VAD
-        self._get_vad_model()
-
+    def _init_whisper_model(self):
+        """初始化 Faster-Whisper 模型 (优先锁定 GPU 推理)"""
         if self._whisper_model is not None:
             return self._whisper_model
         try:
@@ -136,6 +200,51 @@ class STTWorker:
             except Exception as ex:
                 logger.error(f"[STTWorker] Whisper 模型加载彻底失败: {ex}", exc_info=True)
                 return None
+
+    def _init_paraformer_model(self):
+        """初始化阿里 FunASR Paraformer 模型 (优先锁定 GPU 推理)"""
+        if self._paraformer_model is not None:
+            return self._paraformer_model
+        try:
+            from funasr import AutoModel
+            target_device = "cuda:0" if (self.device in ("cuda", "auto")) else "cpu"
+            try:
+                import torch
+                if not torch.cuda.is_available() and target_device.startswith("cuda"):
+                    target_device = "cpu"
+            except Exception:
+                target_device = "cpu"
+
+            actual_path = _resolve_paraformer_path(self.paraformer_model_name)
+            logger.info(f"[STTWorker] 正在加载阿里 FunASR Paraformer 模型: {actual_path} (device={target_device})...")
+            self._paraformer_model = AutoModel(
+                model=actual_path,
+                device=target_device,
+                disable_update=True,
+                disable_pbar=True,
+                trust_remote_code=False,
+            )
+            logger.info(f"[STTWorker] ✅ FunASR Paraformer 初始化成功 (运行于 [{target_device}])！")
+            return self._paraformer_model
+        except ImportError:
+            logger.info("[STTWorker] FunASR 运行库未就绪，自动平滑切换至 Faster-Whisper 引擎")
+            return None
+        except Exception as e:
+            logger.warning(f"[STTWorker] Paraformer 初始化异常 ({e})，平滑降级至 Faster-Whisper")
+            return None
+
+    def initialize_model(self):
+        """初始化 STT 与 Silero VAD 模型 (优先 GPU 加速)"""
+        # 预热 Silero VAD
+        self._get_vad_model()
+
+        if self.stt_engine == "paraformer":
+            m = self._init_paraformer_model()
+            if m is not None:
+                return m
+            logger.info("[STTWorker] Paraformer 未能加载，自动无感知平滑降级为 Faster-Whisper...")
+
+        return self._init_whisper_model()
 
     def put_audio(self, pcm16_chunk: bytes):
         """投入音频块 (16kHz 16bit PCM 单声道)"""
@@ -254,6 +363,20 @@ class STTWorker:
             if not self._is_speaking:
                 # 待命状态：检查是否达到说话启动门限
                 if self._consecutive_speech_frames >= required_frames:
+                    # 【核心防护】若当前 AI 正在发声播音或处于残响期，且开启了声学判别器：
+                    # 必须校验该段音频是否为 AI 自身通过虚拟声卡回流的声音，绝对杜绝 AI 自发音切断自身播音！
+                    if ai_speaking and self.acoustic_classifier:
+                        check_pcm = b"".join(list(self._pre_speech_ring_buffer) + [chunk])
+                        try:
+                            is_ai, corr, rec_p, ai_p, reason = self.acoustic_classifier.classify(check_pcm, rate=16000)
+                            if is_ai or corr >= 0.35:
+                                # 确认为 AI 自身回声，严禁误触发打断与录音，清空连续人声帧
+                                self._consecutive_speech_frames = 0
+                                self._pre_speech_ring_buffer.clear()
+                                continue
+                        except Exception as e:
+                            logger.debug(f"[STTWorker] 预判 AI 回声异常: {e}")
+
                     self._is_speaking = True
                     self._silence_start_time = 0.0
                     logger.info(f"[STTWorker] 准确识别对方人声开始 (prob={speech_prob:.2f}, energy={energy:.0f}, 触发打断)...")
@@ -294,11 +417,15 @@ class STTWorker:
                         self._speech_buffer.clear()
 
     def _transcribe_and_dispatch(self, pcm_bytes: bytes):
-        """执行声波/音调声学物理判别与 Faster-Whisper 转写净化过滤"""
-        if not self._whisper_model:
+        """执行声波/音调声学物理判别与 Paraformer/Faster-Whisper 极速转写净化过滤"""
+        if not self._whisper_model and not self._paraformer_model:
+            self.initialize_model()
+
+        if not self._whisper_model and not self._paraformer_model:
             return
 
         # 核心声学物理判别 (基于声波波形归一化互相关与音调基频特征):
+        # 无论使用哪种 STT 引擎，必须优先经由声学判别器判定，杜绝虚拟声卡自发音死循环
         if self.acoustic_classifier:
             try:
                 is_ai, corr, rec_p, ai_p, reason = self.acoustic_classifier.classify(pcm_bytes, rate=16000)
@@ -306,34 +433,59 @@ class STTWorker:
                     logger.warning(f"[STTWorker] 🚫 声波/音调判定为 AI 自身发音回流 ({reason})，已从底层物理阻断！")
                     return
                 else:
-                    logger.info(f"[STTWorker] 👤 声波/音调判定为对面真实用户发言 ({reason}) -> 启动 Whisper 识别")
+                    logger.info(f"[STTWorker] 👤 声波/音调判定为对面真实用户发言 ({reason}) -> 启动语音识别 ({self.stt_engine})")
             except Exception as e:
                 logger.debug(f"[STTWorker] 声学判别调用异常: {e}")
 
         try:
             audio_array = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            text = ""
 
-            segments, _ = self._whisper_model.transcribe(
-                audio_array,
-                language="zh",
-                beam_size=1,  # 追求电话超低延迟
-                temperature=0.0,
-                vad_filter=True,
-                no_speech_threshold=0.60,  # 提高门限，强力过滤 Whisper 噪音幻觉识别
-            )
+            # 1. 优先使用阿里 FunASR Paraformer 极速毫秒级非自回归转写
+            if self.stt_engine == "paraformer":
+                if self._paraformer_model is None:
+                    self._init_paraformer_model()
 
-            valid_segments = []
-            for seg in segments:
-                # 过滤高无语音概率 (no_speech_prob) 的噪点幻觉
-                if getattr(seg, "no_speech_prob", 0.0) < 0.60:
-                    valid_segments.append(seg.text)
+                if self._paraformer_model is not None:
+                    try:
+                        res = self._paraformer_model.generate(input=audio_array, batch_size_s=300)
+                        if isinstance(res, list) and len(res) > 0:
+                            first_item = res[0]
+                            if isinstance(first_item, dict) and "text" in first_item:
+                                text = str(first_item["text"] or "").strip()
+                            elif isinstance(first_item, str):
+                                text = first_item.strip()
+                        elif isinstance(res, str):
+                            text = res.strip()
+                    except Exception as e:
+                        logger.warning(f"[STTWorker] Paraformer 推理异常 ({e})，尝试自动平滑降级至 Whisper...")
+                        text = ""
 
-            text = "".join(valid_segments).strip()
-            # 过滤纯标点、空白或无意义噪音词
+            # 2. 保底使用 Faster-Whisper 或用户指定 Whisper 模式
+            if not text and (self.stt_engine == "whisper" or self._whisper_model is not None):
+                if self._whisper_model is None:
+                    self._init_whisper_model()
+
+                if self._whisper_model is not None:
+                    segments, _ = self._whisper_model.transcribe(
+                        audio_array,
+                        language="zh",
+                        beam_size=1,  # 追求电话超低延迟
+                        temperature=0.0,
+                        vad_filter=True,
+                        no_speech_threshold=0.60,  # 提高门限，强力过滤 Whisper 噪音幻觉识别
+                    )
+                    valid_segments = []
+                    for seg in segments:
+                        if getattr(seg, "no_speech_prob", 0.0) < 0.60:
+                            valid_segments.append(seg.text)
+                    text = "".join(valid_segments).strip()
+
+            # 3. 文本结果清洗与有效性判定
             cleaned_text = re.sub(r'[\uff0c。？！、\s\.\?!,\-_]', '', text)
             # 必须至少 2 个有效汉字才能触发回复，防止单字幻觉带动大模型出话
             if len(cleaned_text) >= 2:
-                logger.info(f"[STTWorker] 对方说: 「{text}」")
+                logger.info(f"[STTWorker] 对方说: 「{text}」 (识别引擎={self.stt_engine})")
                 if self.on_transcription:
                     try:
                         self.on_transcription(text)

@@ -58,10 +58,12 @@ class WeChatCallAgent:
             on_reply_finished=self._on_ai_reply_finished,
         )
 
-        # 3. 语音识别 Worker (复用 Faster-Whisper，注入声学判别器与全生命周期状态)
+        # 3. 语音识别 Worker (支持 FunASR Paraformer 与 Faster-Whisper，注入声学判别器与全生命周期状态)
         device = self.config.voice.whisper_device
         if device == "auto":
             device = "cuda"
+        stt_eng = getattr(self.config.voip, "stt_engine", "paraformer")
+        para_model = getattr(self.config.voip, "paraformer_model", "paraformer-zh")
         self.stt_worker = STTWorker(
             whisper_model_name=self.config.voice.whisper_model,
             device=device,
@@ -70,6 +72,8 @@ class WeChatCallAgent:
             is_ai_speaking_fn=lambda: self.is_ai_speaking,
             barge_in_enabled=bool(getattr(self.config.voip, "barge_in_enabled", False)),
             acoustic_classifier=self.acoustic_classifier,
+            stt_engine=stt_eng,
+            paraformer_model_name=para_model,
         )
 
         # 4. 虚拟音频路由器 (注入残响延时保护与参考声波采集)
@@ -241,12 +245,15 @@ class WeChatCallAgent:
         self.voip_watcher.config = new_config
         self.dialogue_engine.update_config(new_config.llm)
         self.tts_manager.current_engine = new_config.voip.tts_engine.lower()
+        self.tts_manager.kokoro_voice = getattr(new_config.voip, "kokoro_voice", "zf_xiaobei")
+        self.stt_worker.stt_engine = getattr(new_config.voip, "stt_engine", "paraformer").lower()
+        self.stt_worker.paraformer_model_name = getattr(new_config.voip, "paraformer_model", "paraformer-zh")
         self.audio_router.hangover_sec = getattr(new_config.voip, "echo_hangover_sec", 1.2)
         self.audio_router.input_device_name = new_config.voip.virtual_input_device
         self.audio_router.output_device_name = new_config.voip.virtual_output_device
         self.stt_worker.barge_in_enabled = bool(getattr(new_config.voip, "barge_in_enabled", False))
         self._sync_voice_clone_config()
-        logger.info(f"[CallAgent] 配置热重载完成: 录音输入=[{self.audio_router.input_device_name}], 电话输出=[{self.audio_router.output_device_name}], 打断模式=[{self.stt_worker.barge_in_enabled}]")
+        logger.info(f"[CallAgent] 配置热重载完成: 识别引擎=[{self.stt_worker.stt_engine}], 发音引擎=[{self.tts_manager.current_engine}], 打断模式=[{self.stt_worker.barge_in_enabled}]")
 
     # -------------------------------------------------------------------------
     # 状态与流水线协同回调
@@ -304,23 +311,33 @@ class WeChatCallAgent:
             self.emit_event("barge_in", {"message": "对方说话，AI 语音已被打断"})
 
     def _build_ai_voice_fingerprint_async(self):
-        """在后台线程中合成一段短语音，提前建立 AI 音色声学指纹（不阻塞主流程）"""
+        """在后台线程中合成接通问候语，提前建立 AI 音色声学指纹并主动向电话对面播放问候"""
         def _build():
             try:
-                # 使用当前配置的 TTS 引擎合成一段固定的短句（长度足够提取 MFCC/F0 特征即可）
-                ref_text = "你好，我是你的语音助手，很高兴认识你。"
-                logger.info(f"[CallAgent] 🔊 正在合成 AI 音色参考语音以建立声学指纹...")
-                pcm_bytes, sample_rate = self.tts_manager.synthesize(ref_text)
+                # 使用当前配置的 TTS 引擎合成一段自然的开场短句（既建立 MFCC/F0 声学指纹，又作为开场礼貌问候）
+                greeting_text = "喂，你好！我是微信电话助理，请问有什么可以帮您？"
+                logger.info(f"[CallAgent] 🔊 正在合成接通问候语并建立 AI 声学指纹...")
+                pcm_bytes, sample_rate = self.tts_manager.synthesize(greeting_text)
                 if pcm_bytes and len(pcm_bytes) > 3200:
                     ok = self.acoustic_classifier.build_voice_fingerprint(pcm_bytes, orig_rate=sample_rate)
                     if ok:
                         logger.info("[CallAgent] ✅ AI 音色指纹预建立成功，可在 AI 第一句话播出前即识别回声")
                     else:
                         logger.warning("[CallAgent] ⚠️ AI 音色指纹建立失败，将退化为实时波形互相关模式")
+
+                    # 只要当前通话处于接通中，立即向电话输出端推流播放问候语，确保对面第一时间听到声音
+                    if self._running and getattr(self.voip_watcher, "state", "") == "IN_PROGRESS":
+                        if not getattr(self.audio_router, "_running", False):
+                            self.audio_router.start()
+                        self._recent_ai_utterances.append((greeting_text, time.time()))
+                        self.emit_event("ai_sentence", {"sentence": greeting_text})
+                        logger.info(f"[CallAgent] 🔊 电话接通主动向微信注入问候: 「{greeting_text}」")
+                        self.audio_router.play_audio(pcm_bytes, orig_rate=sample_rate)
+                        self._last_ai_speech_end_time = time.time()
                 else:
-                    logger.warning(f"[CallAgent] ⚠️ TTS 合成参考音频失败或过短 ({len(pcm_bytes) if pcm_bytes else 0} bytes)，跳过指纹预建")
+                    logger.warning(f"[CallAgent] ⚠️ TTS 合成问候音频失败或过短 ({len(pcm_bytes) if pcm_bytes else 0} bytes)")
             except Exception as e:
-                logger.error(f"[CallAgent] AI 音色指纹预建立异常: {e}", exc_info=True)
+                logger.error(f"[CallAgent] AI 音色指纹与开场问候异常: {e}", exc_info=True)
 
         t = threading.Thread(target=_build, daemon=True, name="ai-voice-fingerprint-builder")
         t.start()

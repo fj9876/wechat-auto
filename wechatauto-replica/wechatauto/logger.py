@@ -30,6 +30,15 @@ class ColoredFormatter(logging.Formatter):
         message = super().format(record)
         return f"{LOG_COLORS[levelname]}{message}{colorama.Style.RESET_ALL}"
 
+class FunASRLoggingFilter(logging.Filter):
+    """过滤 FunASR 官方以 WARNING 级别打印的无害安全提示: trust_remote_code"""
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return "trust_remote_code" not in record.getMessage()
+        except Exception:
+            return True
+
+
 class WechatautoLogger:
     name: str = 'wechatauto'
 
@@ -52,6 +61,10 @@ class WechatautoLogger:
         logging.getLogger('urllib3').setLevel(logging.WARNING)
         logging.getLogger('requests').setLevel(logging.WARNING)
 
+        # 添加 FunASR 警告过滤器，屏蔽控制台无害的 trust_remote_code 打印
+        funasr_filter = FunASRLoggingFilter()
+        root_logger.addFilter(funasr_filter)
+
         # 清除现有处理器
         root_logger.handlers.clear()
 
@@ -66,6 +79,7 @@ class WechatautoLogger:
         )
         self.console_handler.setFormatter(console_formatter)
         self.console_handler.setLevel(logging.DEBUG)
+        self.console_handler.addFilter(funasr_filter)
 
         root_logger.addHandler(self.console_handler)
 
@@ -91,6 +105,7 @@ class WechatautoLogger:
         )
         self.file_handler.setFormatter(file_formatter)
         self.file_handler.setLevel(logging.DEBUG)
+        self.file_handler.addFilter(FunASRLoggingFilter())
 
         # 将文件处理器添加到日志记录器
         logging.getLogger().addHandler(self.file_handler)

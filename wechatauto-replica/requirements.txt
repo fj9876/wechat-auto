@@ -27,10 +27,16 @@ python-docx>=1.1.0
 # Speech (ASR) & Multimodal Media Dependencies
 pilk>=0.2.4
 faster-whisper>=1.0.0
+funasr>=1.0.0
+modelscope>=1.15.0
 
 # VoIP Agent & Audio Routing Dependencies
 sounddevice>=0.4.6
 soundfile>=0.12.1
 scipy>=1.11.0
 edge-tts>=6.1.9
+kokoro-onnx>=0.3.0
+onnxruntime-gpu>=1.18.0
+espeakng-loader>=0.2.0
+phonemizer>=3.0.0
 

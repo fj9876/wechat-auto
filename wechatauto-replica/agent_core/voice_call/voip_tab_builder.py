@@ -194,6 +194,48 @@ class VoIPTabBuilder:
         chk_echo.grid(row=0, column=5, sticky="w", padx=(12, 0))
 
         # ---------------------------------------------------------------------
+        # 卡片 1.5: 实时语音识别 (STT) 引擎配置 (优先 GPU 加速)
+        # ---------------------------------------------------------------------
+        card_stt = tk.Frame(scroll_frame, bg=self.app.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.app.COLOR_BORDER, highlightthickness=1)
+        card_stt.pack(fill="x", padx=16, pady=6)
+
+        tk.Label(card_stt, text="👂 实时语音识别引擎 (STT / ASR 极速毫秒响应)", font=("Microsoft YaHei UI", 11, "bold"), bg=self.app.COLOR_CARD, fg=self.app.COLOR_TEXT).pack(anchor="w", padx=16, pady=(12, 6))
+
+        stt_row = tk.Frame(card_stt, bg=self.app.COLOR_CARD)
+        stt_row.pack(fill="x", padx=16, pady=4)
+
+        curr_stt = getattr(self.config.voip, "stt_engine", "paraformer").lower()
+        init_stt_val = "FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)" if "paraformer" in curr_stt else "Faster-Whisper (全语种多规格 / 基础成熟)"
+        self.var_stt_engine = tk.StringVar(value=init_stt_val)
+        self.combo_stt_engine = ttk.Combobox(
+            stt_row,
+            textvariable=self.var_stt_engine,
+            values=[
+                "FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)",
+                "Faster-Whisper (全语种多规格 / 基础成熟)"
+            ],
+            state="readonly",
+            width=46
+        )
+        self.combo_stt_engine.pack(side="left", padx=8)
+        self.combo_stt_engine.bind("<<ComboboxSelected>>", lambda _: self._update_stt_status_ui())
+
+        self.lbl_stt_status = tk.Label(stt_row, text="检测中...", bg=self.app.COLOR_CARD, fg=self.app.COLOR_MUTED)
+        self.lbl_stt_status.pack(side="left", padx=8)
+
+        self.btn_install_stt = tk.Button(
+            stt_row,
+            text="📦 自动补齐依赖 / 校验",
+            command=self.on_install_stt_click,
+            bg="#e0e7ff",
+            fg="#3730a3",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        self.btn_install_stt.pack(side="left", padx=6)
+
+        # ---------------------------------------------------------------------
         # 卡片 2: 语音合成 (TTS) 与声音克隆 (Voice Cloning)
         # ---------------------------------------------------------------------
         card_tts = tk.Frame(scroll_frame, bg=self.app.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.app.COLOR_BORDER, highlightthickness=1)
@@ -205,26 +247,29 @@ class VoIPTabBuilder:
         engine_row.pack(fill="x", padx=16, pady=4)
 
         current_eng = self.config.voip.tts_engine.lower()
-        if "edge" in current_eng:
+        if "kokoro" in current_eng:
+            init_val = "Kokoro-82M (超轻量 82M / 极速低延迟 / CPU首选)"
+        elif "edge" in current_eng:
             init_val = "Edge-TTS (微软高保真拟真 / 推荐)"
         elif "sapi" in current_eng:
             init_val = "Windows SAPI (本地系统语音 / 离线免配置)"
         elif "chattts" in current_eng:
             init_val = "ChatTTS (口语化拟真 / 喘气笑声)"
         else:
-            init_val = "Qwen3-TTS (高保真多语言 / 极速推理)"
+            init_val = "Qwen3-TTS (GGML C++ 量化 / 高保真多语言)"
         self.var_tts_engine = tk.StringVar(value=init_val)
         self.combo_tts_engine = ttk.Combobox(
             engine_row,
             textvariable=self.var_tts_engine,
             values=[
                 "Edge-TTS (微软高保真拟真 / 推荐)",
-                "Qwen3-TTS (高保真多语言 / 极速推理)",
+                "Kokoro-82M (超轻量 82M / 极速低延迟 / CPU首选)",
+                "Qwen3-TTS (GGML C++ 量化 / 高保真多语言)",
                 "ChatTTS (口语化拟真 / 喘气笑声)",
                 "Windows SAPI (本地系统语音 / 离线免配置)"
             ],
             state="readonly",
-            width=36
+            width=42
         )
         self.combo_tts_engine.pack(side="left", padx=8)
         self.combo_tts_engine.bind("<<ComboboxSelected>>", lambda _: self._update_tts_status_ui())
@@ -440,6 +485,7 @@ class VoIPTabBuilder:
 
         # 初始加载
         self.refresh_audio_devices()
+        self._update_stt_status_ui()
         self._update_tts_status_ui()
         self._populate_voices_dropdown()
 
@@ -451,6 +497,117 @@ class VoIPTabBuilder:
         """写入电话监控日志流"""
         self.txt_voip_logs.insert("end", text + "\n", tag)
         self.txt_voip_logs.see("end")
+
+    def _update_stt_status_ui(self):
+        """更新 STT 引擎状态与运行环境 (多线程异步检测，避免 UI 卡顿)"""
+        stt_str = self.var_stt_engine.get().lower()
+        is_para = "paraformer" in stt_str
+        self.lbl_stt_status.configure(text="🔍 正在校验 STT 状态...", fg=self.app.COLOR_MUTED)
+
+        def _async_check():
+            has_runtime = False
+            has_model = False
+            gpu_str = "CPU"
+
+            try:
+                # 优先检测 GPU 状态
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        gpu_str = f"GPU: {torch.cuda.get_device_name(0)}"
+                    else:
+                        import ctranslate2
+                        if ctranslate2.get_cuda_device_count() > 0:
+                            gpu_str = "GPU: CUDA (CTranslate2)"
+                except Exception:
+                    pass
+
+                if is_para:
+                    try:
+                        import funasr  # noqa: F401
+                        import modelscope  # noqa: F401
+                        has_runtime = True
+                    except Exception:
+                        has_runtime = False
+
+                    from agent_core.voice_call.stt_worker import STTWorker
+                    model_name = getattr(self.config.voip, "paraformer_model", "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch")
+                    has_model = STTWorker.is_paraformer_downloaded(model_name)
+                else:
+                    try:
+                        import faster_whisper  # noqa: F401
+                        has_runtime = True
+                    except Exception:
+                        has_runtime = False
+                    has_model = True
+            except Exception as e:
+                logger.debug(f"[VoIPTabBuilder] 异步校验 STT 状态异常: {e}")
+
+            def _apply():
+                current_stt = self.var_stt_engine.get().lower()
+                if ("paraformer" in current_stt) != is_para:
+                    return
+                if is_para:
+                    if has_runtime and has_model:
+                        self.lbl_stt_status.configure(text=f"✅ FunASR 运行库与模型均已就绪 [{gpu_str}]", fg=self.app.COLOR_SUCCESS)
+                        self.btn_install_stt.configure(text="✅ 已就绪 (可重新校验)")
+                    elif has_runtime and not has_model:
+                        self.lbl_stt_status.configure(text=f"⚠️ FunASR 依赖已就绪，未下载模型 [{gpu_str}]", fg=self.app.COLOR_PRIMARY)
+                        self.btn_install_stt.configure(text="📥 自动下载并预热模型")
+                    elif not has_runtime:
+                        self.lbl_stt_status.configure(text="⚠️ 缺少 FunASR / ModelScope 运行依赖", fg=self.app.COLOR_WARNING)
+                        self.btn_install_stt.configure(text="📦 一键自动补齐依赖")
+                else:
+                    if has_runtime:
+                        self.lbl_stt_status.configure(text=f"✅ Faster-Whisper 运行就绪 [{gpu_str}]", fg=self.app.COLOR_SUCCESS)
+                        self.btn_install_stt.configure(text="✅ 已就绪")
+                    else:
+                        self.lbl_stt_status.configure(text="⚠️ 缺少 faster-whisper 运行库", fg=self.app.COLOR_WARNING)
+                        self.btn_install_stt.configure(text="📦 一键安装依赖")
+
+            if hasattr(self.app, "root") and self.app.root:
+                self.app.root.after(0, _apply)
+
+        threading.Thread(target=_async_check, daemon=True, name="CheckSTT").start()
+
+    def on_install_stt_click(self):
+        """一键补齐 STT 所需依赖与模型"""
+        stt_str = self.var_stt_engine.get().lower()
+        is_para = "paraformer" in stt_str
+        self.lbl_stt_status.configure(text="⏳ 正在配置与补齐 STT 环境...", fg=self.app.COLOR_PRIMARY)
+        self.btn_install_stt.configure(state="disabled")
+
+        def _do():
+            try:
+                from agent_core.voice_call.tts_manager import TTSManager
+                if is_para:
+                    TTSManager.auto_install_engine_wheel("funasr")
+                    self.app.root.after(0, lambda: self.lbl_stt_status.configure(text="⏳ 正在从阿里开源镜像缓存 Paraformer 模型..."))
+                    from funasr import AutoModel
+                    target_model = getattr(self.config.voip, "paraformer_model", "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch")
+                    AutoModel(
+                        model=target_model,
+                        disable_update=True,
+                        disable_pbar=True,
+                        trust_remote_code=False,
+                    )
+                else:
+                    TTSManager.auto_install_engine_wheel("faster_whisper")
+
+                self.app.root.after(0, lambda: [
+                    self.lbl_stt_status.configure(text="✅ STT 依赖与模型配置就绪！", fg=self.app.COLOR_SUCCESS),
+                    self.btn_install_stt.configure(state="normal", text="✅ 配置就绪"),
+                    self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] STT 语音识别引擎校验配置通过")
+                ])
+            except Exception as e:
+                err = str(e)
+                self.app.root.after(0, lambda: [
+                    self.lbl_stt_status.configure(text=f"❌ 安装校验异常: {err[:20]}...", fg=self.app.COLOR_DANGER),
+                    self.btn_install_stt.configure(state="normal", text="重试安装"),
+                    self._append_voip_log("barge", f"[{time.strftime('%H:%M:%S')}] STT 补齐异常: {err}")
+                ])
+
+        threading.Thread(target=_do, daemon=True, name="InstallSTT").start()
 
     def _update_tts_status_ui(self):
         """更新 TTS 模型下载就绪状态与运行库状态 (异步多线程检测，杜绝 UI 线程卡顿)"""
@@ -465,7 +622,12 @@ class VoIPTabBuilder:
             return
 
         self.btn_download_tts.configure(state="normal")
-        engine = "chattts" if "chattts" in engine_str else "qwen3_tts"
+        if "kokoro" in engine_str:
+            engine = "kokoro"
+        elif "chattts" in engine_str:
+            engine = "chattts"
+        else:
+            engine = "qwen3_tts"
 
         # 立即反馈 UI，避免任何等待卡顿感
         self.lbl_tts_status.configure(text="🔍 正在校验模型状态...", fg=self.app.COLOR_MUTED)
@@ -479,13 +641,30 @@ class VoIPTabBuilder:
             gpu_tag = f" [GPU: {dev_name}]" if dev_str.startswith("cuda") else ""
 
             def _apply():
-                # 检查当前选中的引擎是否依然匹配
                 current_now = self.var_tts_engine.get().lower()
-                expected = "chattts" if "chattts" in current_now else "qwen3_tts"
+                if "kokoro" in current_now:
+                    expected = "kokoro"
+                elif "chattts" in current_now:
+                    expected = "chattts"
+                else:
+                    expected = "qwen3_tts"
                 if expected != engine:
                     return
 
-                if engine == "chattts":
+                if engine == "kokoro":
+                    if has_weights and has_runtime:
+                        self.lbl_tts_status.configure(text=f"✅ Kokoro-82M 运行库与权重均已就绪{gpu_tag}", fg=self.app.COLOR_SUCCESS)
+                        self.btn_download_tts.configure(text="✅ 已就绪 (可重新校验)")
+                    elif has_runtime and not has_weights:
+                        self.lbl_tts_status.configure(text=f"⚠️ Kokoro-82M 运行库就绪，权重未下载 (约85MB){gpu_tag}", fg=self.app.COLOR_WARNING)
+                        self.btn_download_tts.configure(text="📥 自动下载并配置模型")
+                    elif has_weights and not has_runtime:
+                        self.lbl_tts_status.configure(text="⚠️ Kokoro-82M 缺少运行依赖 (kokoro-onnx)", fg=self.app.COLOR_WARNING)
+                        self.btn_download_tts.configure(text="📦 一键安装运行库")
+                    else:
+                        self.lbl_tts_status.configure(text="⚠️ Kokoro-82M 权重未下载", fg=self.app.COLOR_WARNING)
+                        self.btn_download_tts.configure(text="📥 自动下载并配置模型")
+                elif engine == "chattts":
                     if has_weights and has_runtime:
                         self.lbl_tts_status.configure(text=f"✅ ChatTTS 运行库与权重均已就绪{gpu_tag}", fg=self.app.COLOR_SUCCESS)
                         self.btn_download_tts.configure(text="✅ 已就绪 (可重新校验)")
@@ -498,7 +677,7 @@ class VoIPTabBuilder:
                     else:
                         self.lbl_tts_status.configure(text="⚠️ ChatTTS 权重未下载", fg=self.app.COLOR_WARNING)
                         self.btn_download_tts.configure(text="📥 自动下载并配置模型")
-                else: # qwen3_tts
+                else:  # qwen3_tts
                     if has_weights and has_runtime:
                         self.lbl_tts_status.configure(text=f"✅ Qwen3-TTS 运行库与权重均已就绪{gpu_tag}", fg=self.app.COLOR_SUCCESS)
                         self.btn_download_tts.configure(text="✅ 已就绪 (可重新校验)")
@@ -520,7 +699,12 @@ class VoIPTabBuilder:
     def on_download_tts_click(self):
         """一键从镜像站自动下载模型"""
         engine_str = self.var_tts_engine.get().lower()
-        engine = "chattts" if "chattts" in engine_str else "qwen3_tts"
+        if "kokoro" in engine_str:
+            engine = "kokoro"
+        elif "chattts" in engine_str:
+            engine = "chattts"
+        else:
+            engine = "qwen3_tts"
 
         self.lbl_tts_status.configure(text=f"⏳ 正在从国内高速镜像下载 {engine.upper()}...", fg=self.app.COLOR_PRIMARY)
         self.btn_download_tts.configure(state="disabled")
@@ -532,12 +716,13 @@ class VoIPTabBuilder:
                     self.btn_download_tts.configure(state="normal", text="✅ 下载完成")
                     self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] {engine.upper()} 权重下载校验通过")
                 elif status == "failed":
-                    self.lbl_tts_status.configure(text=f"❌ 下载失败，请检查网络", fg=self.app.COLOR_DANGER)
+                    self.lbl_tts_status.configure(text="❌ 下载失败，请检查网络", fg=self.app.COLOR_DANGER)
                     self.btn_download_tts.configure(state="normal", text="重试下载")
                     self._append_voip_log("barge", f"[{time.strftime('%H:%M:%S')}] {engine.upper()} 下载异常")
                 else:
                     self.lbl_tts_status.configure(text=f"⏳ 下载中 ({int(prog*100)}%)...", fg=self.app.COLOR_PRIMARY)
-            self.app.root.after(0, _update)
+            if hasattr(self.app, "root") and self.app.root:
+                self.app.root.after(0, _update)
 
         if self.call_agent:
             self.call_agent.tts_manager.auto_download_model(engine, background=True, progress_cb=_cb)
@@ -877,7 +1062,9 @@ class VoIPTabBuilder:
             cfg.whitelist_groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
 
             eng_str = self.var_tts_engine.get().lower()
-            if "edge" in eng_str:
+            if "kokoro" in eng_str:
+                cfg.tts_engine = "kokoro"
+            elif "edge" in eng_str:
                 cfg.tts_engine = "edge_tts"
             elif "sapi" in eng_str:
                 cfg.tts_engine = "sapi"
@@ -885,6 +1072,12 @@ class VoIPTabBuilder:
                 cfg.tts_engine = "chattts"
             else:
                 cfg.tts_engine = "qwen3_tts"
+
+            stt_str = self.var_stt_engine.get().lower()
+            if "paraformer" in stt_str:
+                cfg.stt_engine = "paraformer"
+            else:
+                cfg.stt_engine = "faster_whisper"
 
             cfg.voice_clone_enabled = self.var_clone_enabled.get()
             cfg.active_cloned_voice_id = getattr(self, "_current_active_voice_id", "")

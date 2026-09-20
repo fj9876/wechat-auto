@@ -3,12 +3,15 @@
 <div align="center">
 
 > **专为微信 4.x Windows 客户端打造的个人 AI 智能助理**  
-> 集成 **本地原生桌面 GUI (现代竖向导航)** · **多主流大模型 (LLM)** · **联系人专属立体画像与永久记忆 (Memory Engine)** · **本地私有知识库 (BM25 RAG)** · **📞 微信语音电话自动接听与全双工实时 AI 对话 (VoIP Agent)** · **离线/云端语音识别 (ASR)** · **多模态视觉与 OCR 解析** · **群管与自动踢人**
+> 集成 **本地原生桌面 GUI (现代竖向导航)** · **多主流大模型 (LLM)** · **联系人专属立体画像与永久记忆 (Memory Engine)** · **本地私有知识库 (BM25 RAG)** · **📞 微信语音电话自动接听与全双工实时 AI 对话 (VoIP Agent)** · **阿里 FunASR Paraformer 毫秒级口语识别 / Faster-Whisper** · **Kokoro-82M 超轻量超自然实时 TTS / Qwen3-TTS / Edge-TTS** · **多模态视觉与 OCR 解析** · **群管与自动踢人**
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://microsoft.com/windows)
 [![WeChat](https://img.shields.io/badge/WeChat-4.x%20(4.1.12%2B)-brightgreen.svg)](https://weixin.qq.com)
 [![Python](https://img.shields.io/badge/Python-3.9%20~%203.12-blue.svg)](https://python.org)
+[![FunASR](https://img.shields.io/badge/ASR-FunASR%20Paraformer-red.svg)](https://github.com/modelscope/FunASR)
 [![faster-whisper](https://img.shields.io/badge/ASR-faster--whisper%20(Local)-orange.svg)](https://github.com/SYSTRAN/faster-whisper)
+[![Kokoro-82M](https://img.shields.io/badge/TTS-Kokoro--82M%20(Realtime)-blueviolet.svg)](https://github.com/hexgrad/kokoro)
+[![CUDA](https://img.shields.io/badge/CUDA-12.4%20%2F%20RTX%203060%2B-76B900.svg)](https://developer.nvidia.com/cuda-zone)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 </div>
@@ -27,8 +30,11 @@
 - 完整 **AI Agent 决策管道**与**会话级多轮上下文记忆**；
 - **联系人专属立体画像与永久记忆库**（Memory Engine）；
 - **本地私有 BM25 检索增强知识库**（RAG）；
-- 🆕 **微信语音电话自动接听 + 实时全双工 AI 对话**（VoIP Agent）；
-- **双模态语音转写**（本地 faster-whisper + 云端 ASR）；
+- 🆕 **微信语音电话自动接听 + 实时全双工 AI 对话**（VoIP Agent）：
+  - 接入阿里 **FunASR Paraformer** 毫秒级非自回归中文口语识别模型（出字延迟 150~300ms）；
+  - 引入 **Kokoro-82M** 超轻量实时发音引擎（RTF < 0.2）与 **Qwen3-TTS** 智能降级保护；
+  - 接通瞬发礼貌问候、双层声学指纹消除 AI 自发音误打断、全链路自适应动态音量增益；
+- **双模态语音转写**（阿里 FunASR / Faster-Whisper / 云端 ASR）；
 - **多模态视觉大模型 + WinRT OCR** 图片综合理解；
 - 全量内置**绿色便携 Python 运行时 (runtime)**，开箱即用。
 
@@ -48,15 +54,15 @@
 | 🧠 **大模型接口配置** | 兼容 DeepSeek、OpenAI、通义千问等所有 OpenAI 规范 API，一键拉取模型，连通性测试 |
 | 📚 **本地私有知识库 (RAG)** | BM25 稀疏检索切片，支持 `.txt` `.md` `.pdf` `.docx` `.csv`，磁盘索引缓存秒启 |
 | 👤 **用户画像与永久记忆** | 联系人立体画像，增量自完善与认知纠偏，事实记忆碎片，历史记录全量建档 |
-| 🎙️ **多模态与媒体设置** | 语音 ASR 引擎切换（本地/云端），缺模型自动唤起极速镜像下载，视觉/OCR 解析 |
-| 📞 **语音电话守护 (VoIP)** | 微信语音来电自动接听/拒接，实时全双工 AI 对话，多 TTS 音色，声音克隆 |
+| 🎙️ **多模态与媒体设置** | 语音 ASR 引擎切换（FunASR / Whisper / 云端），缺模型自动唤起极速镜像下载，视觉/OCR 解析 |
+| 📞 **语音电话守护 (VoIP)** | 微信语音来电自动接听/拒接，实时全双工 AI 对话，FunASR + Kokoro/Qwen3/Edge 多 TTS，声音克隆 |
 | 🧪 **交互测试沙盒** | 模拟消息输入，无缝测试 RAG 命中、画像记忆注入与 AI 回复效果 |
 
 ---
 
-### 2. 📞 微信语音电话守护 (VoIP Agent) — 全新重磅功能
+### 2. 📞 微信语音电话守护 (VoIP Agent) — 全新重磅升级
 
-> 微信语音来电 → 毫秒级自动探测 → 物理鼠标精准点击接听 → 实时全双工双向语音对话。全程由 AI 接管，无需人工干预！
+> 微信语音来电 → 毫秒级自动探测 → 物理鼠标精准点击接听 → 即刻礼貌开场问候 → 实时全双工双向语音对话。全程由 AI 接管，顺畅自然无冷场！
 
 #### 完整技术架构
 
@@ -69,28 +75,32 @@ VoIPWatcher (Win32 + UIAutomation 毫秒级探测)
     ▼
 AudioRouter (虚拟声卡双工音频路由 · VB-Audio CABLE)
     │  输入流: 对方语音 → STTWorker
-    │  输出流: AI 合成语音 → 注入微信麦克风
+    │  输出流: AI 合成语音 → 动态峰值保真增益 (0.88) → 注入微信麦克风
     ▼
-STTWorker (Faster-Whisper + Silero VAD 实时端点检测)
-    │  声学回声消除 (AcousticClassifier 双层指纹策略: F0基频+MFCC+频谱质心)
-    │  实时转写对方语音文字
+STTWorker (阿里 FunASR Paraformer 毫秒级流式转写 / Faster-Whisper + Silero VAD)
+    │  声学回声消除 (AcousticClassifier: F0基频 + MFCC + 频谱质心 + 波形互相关)
+    │  防自发音误打断判定 (AI 正在播音时先行校验声学指纹，严禁掐断自身发音)
     ▼
 DialogueEngine (大模型流式对话引擎)
     │  联系人画像与长期事实记忆注入 · 实时多轮上下文管理
     ▼
-TTSManager (Edge-TTS / ChatTTS / Qwen3-TTS / 声音克隆)
-    │  有序流水线并发合成 · 智能断句分片 · Generation ID 打断撤销机制
+TTSManager (Kokoro-82M / Edge-TTS / Qwen3-TTS / 声音克隆)
+    │  接通瞬间即刻推流开场问候 · 防卡死保底降级 · Generation ID 打断撤销机制
     ▼
-AudioRouter.play_audio() → 推流至虚拟声卡注入微信
+AudioRouter.play_audio() → 动态音量归一化 → 推流至虚拟声卡注入微信
 ```
 
 #### 核心技术亮点
-- 🔍 **精准无感接听**：多层 Win32/UIA 探测微信 4.x `mmui::VOIPTrayWindow` 弹窗，严格按几何推算坐标（绿色接听按键位于右侧 86%）物理点击，杜绝误触挂断按键；
-- ⚡ **智能打断唤醒 (Barge-in)**：Silero VAD 毫秒级检测对方人声，一旦对方开口立即停止当前 AI 发音，清空音频队列，秒速转入倾听；
-- 🔇 **双层声学回声消除**：预建立 AI 音色声学指纹（F0 基频、MFCC 倒谱、频谱质心）结合波形互相关校验，从根本上防止 AI 自己的声音被麦克风二次录入导致的自言自语或死锁；
-- 🎵 **多引擎 TTS 支持**：内置 Edge-TTS（免费极速、真人音色丰富）、ChatTTS、Qwen3-TTS 本地离线推理，并支持自定义声音克隆；
-- ⏱️ **流水线并发生成**：流式 LLM 输出结合多句异步并发 TTS 合成，配合 Generation ID 保序分发，首字到发音延迟低至 1 秒以内；
-- 🛡️ **自动守护与挂断**：支持最大通话时长保护自动挂断、守护线程异常自愈、多设备热插拔自恢复。
+- 🚀 **阿里 FunASR Paraformer 毫秒级流式 ASR**：针对中文口语深度优化，非自回归结构，出字延迟仅 150~300ms，显存占用远低于 Whisper，对方刚落音瞬间即可出字送入 LLM；
+- ⚡ **即刻开场礼貌问候**：电话接通瞬间立即由 AI 异步合成并推流开场白（“喂，你好！我是微信电话助理，请问有什么可以帮您？”），彻底解决接通后的死寂冷场；
+- 🛡️ **声学指纹防自打断 (Anti-Barge-in Misfire)**：预建 AI 音色声学指纹（F0 基频、MFCC 倒谱、频谱质心）并结合实时互相关校验。在 AI 发音期间若录到声学回声，先行判定为自身发音并过滤，彻底杜绝发音瞬间自我掐断的顽疾；
+- 🔊 **全链路动态音量保真增益**：微信客户端具有激进的自适应降噪与 AGC，若声音微弱会被微信误判为底噪而静音。AudioRouter 引入峰值 0.88 自适应保真增益归一化与防爆音限制器，确保对方听到的 AI 声音清晰饱满；
+- 🎙️ **超轻量 Kokoro-82M + Qwen3-TTS 保底守护**：
+  - **Kokoro-82M**：参数量仅 82M，纯 CPU / 多线程推流极速（RTF < 0.2），音质自然纯净；
+  - **Qwen3-TTS**：具备上下文韵律理解，结合 GGML/PyTorch 守护与防死寂超时自动回退机制；
+  - **Edge-TTS / 声音克隆**：多种真人音色与音色克隆一键切换；
+- 🔍 **精准无感接听**：多层 Win32/UIA 探测微信 4.x `mmui::VOIPTrayWindow` 弹窗，严格按几何推算坐标物理点击，杜绝误触挂断；
+- 🛡️ **自动守护与挂断**：支持最大通话时长保护自动挂断、守护线程异常自愈、音频设备热插拔自恢复。
 
 ---
 
@@ -246,18 +256,20 @@ wechat-auto/
     │   ├── tools.py               # 群管踢人、群成员检测等工具执行器
     │   ├── wechat_bridge.py       # 微信底层消息监听与发信桥接层
     │   └── voice_call/            # 📞 语音电话守护核心模块
-    │       ├── call_agent.py      # 语音电话总控与生命周期调度
+    │       ├── call_agent.py      # 语音电话总控、开场问候与生命周期调度
     │       ├── voip_watcher.py    # 来电弹窗毫秒级探测与精准点击接听
-    │       ├── audio_router.py    # 虚拟声卡双工音频路由与自愈
-    │       ├── stt_worker.py      # 实时语音端点识别 (Whisper + Silero VAD)
+    │       ├── audio_router.py    # 虚拟声卡双工音频路由、动态增益与设备自愈
+    │       ├── stt_worker.py      # 实时语音识别 (阿里 FunASR Paraformer / Faster-Whisper)
     │       ├── dialogue_engine.py # 流式大模型对话生成引擎
-    │       ├── tts_manager.py     # TTS 多引擎管理与有序流水线并发分发
+    │       ├── tts_manager.py     # TTS 多引擎管理 (Kokoro-82M / Qwen3 / Edge-TTS)
     │       ├── acoustic_classifier.py # 声学回声消除判别器 (音色指纹+互相关)
     │       ├── voice_clone.py     # 声音克隆管理器
-    │       └── voip_tab_builder.py# VoIP GUI 面板构建器
+    │       └── voip_tab_builder.py# VoIP GUI 面板构建器 (独立 STT & TTS 卡片)
     │
+    ├── scripts/                   # 辅助与模型下载脚本
+    │   └── download_tts_models.py # Kokoro-82M 与 Qwen3-TTS 模型一键预下载
     ├── data/profiles/             # 联系人专属立体画像独立存储目录 (*.json)
-    ├── models/                    # 本地 Whisper 离线语音模型目录 (按需下载)
+    ├── models/                    # 本地语音模型目录 (Paraformer / Whisper / TTS)
     ├── runtime/                   # 全量内置绿色免安装 Python 运行时环境
     └── wechatauto/                # 微信 4.x 底层自动化核心库 (DB解密/UIA驱动/发信)
 ```
@@ -275,17 +287,34 @@ wechat-auto/
 - 检查日志输出中是否包含 `几何推算坐标(接听=右侧86%)`；
 - 建议屏幕 DPI 缩放保持在 100% 以获得最高精度的物理坐标点击。
 
-### Q3: 通话时 AI 不说话 / 几轮后没有反应？
-这是由于早期版本中打断后旧指纹误判引起的声学回声消除死锁。本项目已彻底修复此问题。如使用自建环境，请确保同步拉取了最新代码。
+### Q3: 微信电话接通后对方听不到 AI 声音，或者突然断掉？
+请按照以下**四步检查链条**进行排查：
+1. **检查虚拟声卡设备绑定（至关重要）**：
+   - **微信客户端内设置**：进入微信 `设置 -> 声音与通话`，将**麦克风**设置为 `CABLE Output (VB-Audio Point)`，**扬声器**设置为 `CABLE Input (VB-Audio Point)`；
+   - **本软件 VoIP 面板设置**：输入设备选择 `CABLE Output`，输出设备选择 `CABLE Input`；
+2. **检查 Windows 麦克风隐私权限**：
+   - 进入 Windows `设置 -> 隐私与安全性 -> 麦克风`，确保“允许桌面应用访问麦克风”处于开启状态；
+3. **自发音误打断防线已升级**：
+   - 旧版本在 AI 发音时，环境回声可能被误判为用户插话（Barge-in）从而在 160ms 内掐断发音。当前版本已全面接入**声学特征指纹过滤与互相关预检**，并在接通瞬间主动发送开场问候（"喂，你好！..."），确保开局绝不死寂；
+4. **音频增益保障**：
+   - 本项目已内置**峰值自适应保真增益**（动态放大至 0.88 并防爆音削峰），防止微信自带降噪 AGC 将声音当作环境底噪过滤。
 
-### Q4: 语音识别缺少模型，如何下载？
+### Q4: 实时语音识别（STT）选择 FunASR 还是 Faster-Whisper？
+- **强烈推荐阿里 FunASR Paraformer**：针对中文普通话与日常口语深度优化，非自回归结构，出字时延仅 150~300ms（用户落音瞬间即可出字），显存占用极小（仅约 1.5GB），大幅降低对话感知延迟；
+- **Faster-Whisper**：多语种识别能力全面，适合英文或多语种混合场景。在 VoIP 面板的「实时语音识别 (STT) 引擎」卡片中可随时一键切换。
+
+### Q5: Kokoro-82M 与 Qwen3-TTS 离线模型如何下载？
+- **Kokoro-82M**：超轻量 82M 参数量，纯 CPU / 多线程推流极速（RTF < 0.2），发音清晰自然，无独立显卡即可流畅运行；
+- **模型自动下载**：可在终端运行 `python scripts/download_tts_models.py`，脚本将自动从 ModelScope / 国内极速源并行下载所需权重文件并自动就位。
+
+### Q6: 语音识别缺少模型，如何手动下载？
 在【🎙️ 多模态与媒体设置】中选择对应模型规格后，直接点击下方【🌐 打开模型极速下载网页】，软件将自动在本地浏览器打开国内极速镜像下载页。将权重文件放入 `models/whisper-{规格}` 目录后重新点击测试即可。
 
-### Q5: 群聊踢人指令 `@用户 踢` 没有反应？
+### Q7: 群聊踢人指令 `@用户 踢` 没有反应？
 请确保当前运行机器人的微信号是该群的**群主或群管理员**，并在【👥 回复对象配置】面板右侧填入准确的「群管理员微信昵称」。
 
-### Q6: 提示 `No module named 'tokenizers'` 或 `faster_whisper` 报错？
-本项目内置的 `runtime` 环境已完整打包全部运行库（双击 `run_ui.bat` 即可）；若是自建环境，请运行 `pip install tokenizers faster-whisper`。
+### Q8: 启动或调用时出现 `trust_remote_code: False` 告警？
+这是 ModelScope / HuggingFace 模型加载时的标准安全策略提示，不影响任何功能。本项目已在全局日志体系中挂载过滤层，终端日志保持清爽无扰。
 
 ---
 

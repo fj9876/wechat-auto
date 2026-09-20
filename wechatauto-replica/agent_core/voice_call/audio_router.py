@@ -343,15 +343,27 @@ class AudioRouter:
             # 转换为 float32 并重采样 (若采样率不一致)
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
+            # 动态人声音量保真增益 (防止微信软件端 AGC 门限将轻微发音当作背景噪声滤除)
+            if len(samples) > 0:
+                max_peak = float(np.max(np.abs(samples)))
+                if 0.01 < max_peak < 0.70:
+                    gain = min(2.5, 0.88 / max_peak)
+                    samples = samples * gain
+
             if orig_rate != self.sample_rate and len(samples) > 0:
-                # 简易线性插值重采样
-                duration = len(samples) / orig_rate
-                target_len = int(duration * self.sample_rate)
-                samples = np.interp(
-                    np.linspace(0, len(samples), target_len, endpoint=False),
-                    np.arange(len(samples)),
-                    samples
-                ).astype(np.float32)
+                try:
+                    import scipy.signal
+                    num_target = int(len(samples) * self.sample_rate / orig_rate)
+                    samples = scipy.signal.resample(samples, num_target).astype(np.float32)
+                except Exception:
+                    # 简易线性插值兜底
+                    duration = len(samples) / orig_rate
+                    target_len = int(duration * self.sample_rate)
+                    samples = np.interp(
+                        np.linspace(0, len(samples), target_len, endpoint=False),
+                        np.arange(len(samples)),
+                        samples
+                    ).astype(np.float32)
 
             # 分块平滑推入声卡
             chunk_size = 1024
