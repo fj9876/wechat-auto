@@ -89,7 +89,16 @@
     "max_call_duration_min": 60,
     "virtual_input_device": "CABLE Output (VB-Audio Virtual Cable)",
     "virtual_output_device": "CABLE Input (VB-Audio Virtual Cable)",
-    "barge_in_enabled": true
+    "barge_in_enabled": true,
+    "video_enabled": true,
+    "video_answer_mode": "video",
+    "avatar_engine": "liveportrait",
+    "avatar_image_path": "data/avatars/default_avatar.png",
+    "comfyui_url": "http://127.0.0.1:8188",
+    "virtual_camera_device": "auto",
+    "virtual_camera_fps": 25,
+    "virtual_camera_width": 640,
+    "virtual_camera_height": 480
   },
   "groups_config": {},
   "auto_start_wechat": false

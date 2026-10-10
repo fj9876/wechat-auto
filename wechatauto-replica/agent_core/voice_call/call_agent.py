@@ -87,6 +87,31 @@ class WeChatCallAgent:
         )
         self.audio_router.hangover_sec = hangover
 
+        # 4.1 虚拟数字人与视频流路由器 (LivePortrait-Realtime & MuseTalk)
+        try:
+            import os
+            from agent_core.video_call.avatar_engine import AvatarEngineManager
+            from agent_core.video_call.video_router import VideoRouter
+            self.avatar_manager = AvatarEngineManager(config=self.config)
+            cam_w = getattr(self.config.voip, "virtual_camera_width", 640)
+            cam_h = getattr(self.config.voip, "virtual_camera_height", 480)
+            cam_fps = getattr(self.config.voip, "virtual_camera_fps", 25)
+            self.video_router = VideoRouter(
+                app_config=self.config,
+                avatar_manager=self.avatar_manager,
+                width=cam_w,
+                height=cam_h,
+                fps=cam_fps
+            )
+            char_img = getattr(self.config.voip, "avatar_image_path", "data/avatars/default_avatar.png")
+            if os.path.exists(char_img):
+                self.avatar_manager.set_character_image(char_img)
+            logger.info("[CallAgent] ✅ 虚拟数字人与视频路由中枢就绪")
+        except Exception as e:
+            logger.warning(f"[CallAgent] 视频数字人组件初始化跳过: {e}")
+            self.avatar_manager = None
+            self.video_router = None
+
         # 5. 来电检测器
         self.voip_watcher = VoIPWatcher(
             config=self.config,
@@ -231,6 +256,8 @@ class WeChatCallAgent:
 
         self.voip_watcher.stop()
         self.audio_router.stop()
+        if getattr(self, "video_router", None):
+            self.video_router.stop()
         self.stt_worker.stop()
         self.dialogue_engine.cancel()
         self._recent_ai_utterances.clear()
@@ -253,21 +280,33 @@ class WeChatCallAgent:
         self.audio_router.output_device_name = new_config.voip.virtual_output_device
         self.stt_worker.barge_in_enabled = bool(getattr(new_config.voip, "barge_in_enabled", False))
         self._sync_voice_clone_config()
+        if getattr(self, "avatar_manager", None):
+            try:
+                import os
+                eng_type = getattr(new_config.voip, "avatar_engine", "liveportrait")
+                self.avatar_manager.set_engine_type(eng_type)
+                img_path = getattr(new_config.voip, "avatar_image_path", "data/avatars/default_avatar.png")
+                if os.path.exists(img_path):
+                    self.avatar_manager.set_character_image(img_path)
+            except Exception as e:
+                logger.debug(f"[CallAgent] 热重载数字人配置异常: {e}")
         logger.info(f"[CallAgent] 配置热重载完成: 识别引擎=[{self.stt_worker.stt_engine}], 发音引擎=[{self.tts_manager.current_engine}], 打断模式=[{self.stt_worker.barge_in_enabled}]")
 
     # -------------------------------------------------------------------------
     # 状态与流水线协同回调
     # -------------------------------------------------------------------------
 
-    def _on_call_incoming(self, caller_name: str, is_group: bool):
+    def _on_call_incoming(self, caller_name: str, is_group: bool, is_video: bool = False):
         """来电实时感知事件 (振铃中)"""
-        logger.info(f"[CallAgent] 🔔 捕获到微信来电请求: 来电方=[{caller_name}], 是否群聊={is_group}")
-        self.emit_event("call_incoming", {"caller": caller_name, "is_group": is_group})
+        call_type = "视频" if is_video else "语音"
+        logger.info(f"[CallAgent] 🔔 捕获到微信{call_type}来电请求: 来电方=[{caller_name}], 是否群聊={is_group}")
+        self.emit_event("call_incoming", {"caller": caller_name, "is_group": is_group, "is_video": is_video})
 
-    def _on_call_answered(self, caller_name: str, is_group: bool):
+    def _on_call_answered(self, caller_name: str, is_group: bool, is_video: bool = False):
         """电话接通事件"""
-        logger.info(f"[CallAgent] 电话已接通: 开始与 [{caller_name}] 实时对话 (is_group={is_group})")
-        self.emit_event("call_connected", {"caller": caller_name, "is_group": is_group})
+        call_type = "视频" if is_video else "语音"
+        logger.info(f"[CallAgent] {call_type}电话已接通: 开始与 [{caller_name}] 实时对话 (is_group={is_group}, is_video={is_video})")
+        self.emit_event("call_connected", {"caller": caller_name, "is_group": is_group, "is_video": is_video})
 
         self._recent_ai_utterances.clear()
         self.acoustic_classifier.clear()
@@ -290,6 +329,12 @@ class WeChatCallAgent:
         self.audio_router.start()
         self.stt_worker.start()
 
+        # 若开启了视频数字人功能，电话接通时保持虚拟摄像头推流待命，彻底杜绝微信连入绿幕
+        if getattr(self.config.voip, "video_enabled", True):
+            if getattr(self, "video_router", None) and not self.video_router.is_running:
+                logger.info(f"[CallAgent] 📹 通话接通 (is_video={is_video})，立即启动虚拟数字人视频推流中枢")
+                self.video_router.start()
+
     def _on_caller_speech_started(self):
         """对方开始说话 -> 触发全双工打断 (Barge-in)"""
         if self.config.voip.barge_in_enabled:
@@ -307,6 +352,8 @@ class WeChatCallAgent:
             # 只刷新时间戳，让已缓存的 AI 声波指纹继续发挥作用
             self.acoustic_classifier.reset_timer_only()
             self.audio_router.interrupt()
+            if getattr(self, "video_router", None) and self.video_router.is_running:
+                self.video_router.interrupt()
             self.dialogue_engine.cancel()
             self.emit_event("barge_in", {"message": "对方说话，AI 语音已被打断"})
 
@@ -333,6 +380,8 @@ class WeChatCallAgent:
                         self.emit_event("ai_sentence", {"sentence": greeting_text})
                         logger.info(f"[CallAgent] 🔊 电话接通主动向微信注入问候: 「{greeting_text}」")
                         self.audio_router.play_audio(pcm_bytes, orig_rate=sample_rate)
+                        if getattr(self, "video_router", None) and self.video_router.is_running:
+                            self.video_router.put_audio(pcm_bytes, sample_rate=sample_rate)
                         self._last_ai_speech_end_time = time.time()
                 else:
                     logger.warning(f"[CallAgent] ⚠️ TTS 合成问候音频失败或过短 ({len(pcm_bytes) if pcm_bytes else 0} bytes)")
@@ -476,6 +525,8 @@ class WeChatCallAgent:
                         self.audio_router.start()
                     logger.info(f"[CallAgent] 🔊 向微信声卡注入语音(流水线就绪): 「{sentence}」 (序号={cur_seq}, 长度={len(pcm_bytes)}字节, 采样率={rate})")
                     self.audio_router.play_audio(pcm_bytes, orig_rate=rate)
+                    if getattr(self, "video_router", None) and self.video_router.is_running:
+                        self.video_router.put_audio(pcm_bytes, sample_rate=rate)
                     self._last_ai_speech_end_time = time.time()
 
     def _on_ai_reply_finished(self, full_reply: str):
@@ -492,6 +543,8 @@ class WeChatCallAgent:
         self._last_ai_speech_end_time = 0.0
         self.acoustic_classifier.clear()
         self.audio_router.stop()
+        if getattr(self, "video_router", None):
+            self.video_router.stop()
         self.stt_worker.stop()
         self.dialogue_engine.cancel()
         self._recent_ai_utterances.clear()

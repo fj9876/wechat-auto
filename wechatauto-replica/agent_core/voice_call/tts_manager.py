@@ -36,6 +36,12 @@ CHATTTS_DIR = os.path.join(MODELS_ROOT, "ChatTTS")
 QWEN3_TTS_DIR = os.path.join(MODELS_ROOT, "Qwen3-TTS")
 KOKORO_DIR = os.path.join(MODELS_ROOT, "Kokoro-82M")
 
+# 强制将 HuggingFace / ModelScope / Torch 缓存全部定向至项目 models 目录
+os.environ["MODELSCOPE_CACHE"] = os.path.join(MODELS_ROOT, "modelscope")
+os.environ["HF_HOME"] = os.path.join(MODELS_ROOT, "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(MODELS_ROOT, "huggingface", "hub")
+os.environ["TORCH_HOME"] = os.path.join(MODELS_ROOT, "torch")
+
 # 国内镜像源配置
 HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
 CHATTTS_REPO_ID = "2noise/ChatTTS"

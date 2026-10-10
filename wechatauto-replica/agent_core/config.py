@@ -219,6 +219,16 @@ class VoIPConfig(BaseModel):
     virtual_input_device: str = Field(default="", description="音频录音输入设备(微信扬声器路由，如 CABLE-B Output)")
     virtual_output_device: str = Field(default="", description="音频播放输出设备(注入微信麦克风，如 CABLE-A Input)")
     barge_in_enabled: bool = Field(default=True, description="是否开启全双工智能打断 (对方说话立即暂停AI播音)")
+    video_enabled: bool = Field(default=True, description="是否启用微信视频通话接听与虚拟数字人接入")
+    video_answer_mode: str = Field(default="video", description="视频来电接听方式: video (接听并开启视频), voice (以语音接听)")
+    avatar_engine: str = Field(default="liveportrait", description="数字人驱动引擎: liveportrait, wav2lip, musetalk")
+    avatar_image_path: str = Field(default="data/avatars/default_avatar.png", description="数字人正面立绘图片路径")
+    use_sidecar: bool = Field(default=False, description="是否启用 Sidecar 独立进程隔离架构 (参考 OpenTalking)")
+    comfyui_url: str = Field(default="http://127.0.0.1:8188", description="本地 ComfyUI API 地址")
+    virtual_camera_device: str = Field(default="auto", description="虚拟摄像头 DirectShow 滤镜设备")
+    virtual_camera_fps: int = Field(default=25, description="虚拟摄像头输出帧率 (FPS)")
+    virtual_camera_width: int = Field(default=640, description="虚拟摄像头画面宽度 (推荐 DirectShow 兼容 640)")
+    virtual_camera_height: int = Field(default=480, description="虚拟摄像头画面高度 (推荐 DirectShow 兼容 480)")
 
 
 class AppConfig(BaseModel):

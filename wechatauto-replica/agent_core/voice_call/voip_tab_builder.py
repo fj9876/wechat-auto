@@ -19,6 +19,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog, scrolledtext
 from typing import Optional, Dict, Any, List
+import numpy as np
+import cv2
 
 from agent_core.voice_call.audio_router import AudioRouter
 from agent_core.voice_call.voice_clone import VoiceCloneManager
@@ -433,6 +435,204 @@ class VoIPTabBuilder:
         btn_recheck_devs.pack(side="right", padx=8, pady=4)
 
         # ---------------------------------------------------------------------
+        # 卡片 3.5: 📹 微信视频通话与本地虚拟数字人 (LivePortrait & MuseTalk)
+        # ---------------------------------------------------------------------
+        card_video = tk.Frame(scroll_frame, bg=self.app.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.app.COLOR_BORDER, highlightthickness=1)
+        card_video.pack(fill="x", padx=16, pady=6)
+
+        video_head = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        video_head.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(video_head, text="📹 微信视频通话与本地虚拟数字人 (ComfyUI / LivePortrait / MuseTalk)", font=("Microsoft YaHei UI", 11, "bold"), bg=self.app.COLOR_CARD, fg=self.app.COLOR_TEXT).pack(side="left")
+
+        # 视频通话开关与接听方式
+        v_ctrl_row = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        v_ctrl_row.pack(fill="x", padx=16, pady=4)
+
+        self.var_video_enabled = tk.BooleanVar(value=getattr(self.config.voip, "video_enabled", True))
+        chk_video = tk.Checkbutton(v_ctrl_row, text="启用微信视频通话接听与数字人推流", variable=self.var_video_enabled, bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold"), fg=self.app.COLOR_PRIMARY)
+        chk_video.pack(side="left")
+
+        tk.Label(v_ctrl_row, text="视频呼入接听动作:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(16, 4))
+        curr_vmode = getattr(self.config.voip, "video_answer_mode", "video")
+        init_vmode_str = "接听并开启视频 (数字人)" if curr_vmode == "video" else "以语音接听 (仅音频)"
+        self.var_video_mode = tk.StringVar(value=init_vmode_str)
+        self.combo_video_mode = ttk.Combobox(
+            v_ctrl_row,
+            textvariable=self.var_video_mode,
+            values=["接听并开启视频 (数字人)", "以语音接听 (仅音频)"],
+            state="readonly",
+            width=22
+        )
+        self.combo_video_mode.pack(side="left", padx=4)
+
+        # 引擎选择行
+        eng_row = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        eng_row.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(eng_row, text="数字人推理引擎:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
+        curr_av_eng = getattr(self.config.voip, "avatar_engine", "liveportrait").lower()
+        if "wav2lip" in curr_av_eng:
+            init_av_str = "Wav2Lip-Realtime (GAN 音素口型补全 / OpenTalking 推荐轻量级 / 30-50 FPS)"
+        elif "liveportrait" in curr_av_eng:
+            init_av_str = "LivePortrait-Realtime (毫秒级表情隐空间形变 / 25-30 FPS / 推荐)"
+        else:
+            init_av_str = "MuseTalk (UNet 深度自适应口型修复 / 20-25 FPS)"
+
+        self.var_avatar_engine = tk.StringVar(value=init_av_str)
+        self.combo_avatar_engine = ttk.Combobox(
+            eng_row,
+            textvariable=self.var_avatar_engine,
+            values=[
+                "LivePortrait-Realtime (毫秒级表情隐空间形变 / 25-30 FPS / 推荐)",
+                "Wav2Lip-Realtime (GAN 音素口型补全 / OpenTalking 推荐轻量级 / 30-50 FPS)",
+                "MuseTalk (UNet 深度自适应口型修复 / 20-25 FPS)"
+            ],
+            state="readonly",
+            width=58
+        )
+        self.combo_avatar_engine.pack(side="left", padx=8)
+        self.combo_avatar_engine.bind("<<ComboboxSelected>>", self.on_avatar_engine_changed)
+
+        # 立绘资产配置行
+        avatar_row = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        avatar_row.pack(fill="x", padx=16, pady=4)
+
+        tk.Label(avatar_row, text="正面立绘图片:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        self.var_avatar_image = tk.StringVar(value=getattr(self.config.voip, "avatar_image_path", "data/avatars/default_avatar.png"))
+        self.entry_avatar_image = ttk.Entry(avatar_row, textvariable=self.var_avatar_image, width=38)
+        self.entry_avatar_image.pack(side="left", padx=6)
+
+        btn_browse_avatar = tk.Button(
+            avatar_row,
+            text="📁 浏览选择正面立绘",
+            command=self.on_browse_avatar_image_click,
+            bg="#f1f5f9",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8),
+            cursor="hand2"
+        )
+        btn_browse_avatar.pack(side="left", padx=4)
+
+        btn_import_comfyui = tk.Button(
+            avatar_row,
+            text="🎨 从本地 ComfyUI 一键导入最新立绘",
+            command=self.on_import_comfyui_image_click,
+            bg="#fdf2f8",
+            fg="#be185d",
+            activebackground="#fce7f3",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        btn_import_comfyui.pack(side="left", padx=6)
+
+        # 虚拟摄像头状态与测试推流行
+        vcam_row = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        vcam_row.pack(fill="x", padx=16, pady=(6, 12))
+
+        self.lbl_vcam_status = tk.Label(vcam_row, text="📷 正在检测虚拟摄像头驱动...", bg=self.app.COLOR_CARD, fg=self.app.COLOR_MUTED, font=("Microsoft YaHei UI", 9))
+        self.lbl_vcam_status.pack(side="left")
+
+        btn_install_vcam = tk.Button(
+            vcam_row,
+            text="🛠️ 一键安装虚拟摄像头驱动 (UnityCapture / OBS)",
+            command=self.on_install_vcam_click,
+            bg="#dcfce7",
+            fg="#15803d",
+            activebackground="#bbf7d0",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        btn_install_vcam.pack(side="left", padx=8)
+
+        btn_preview_avatar = tk.Button(
+            vcam_row,
+            text="👁️ 启动实时测试预览窗口",
+            command=self.on_preview_avatar_click,
+            bg="#eff6ff",
+            fg="#1d4ed8",
+            activebackground="#dbeafe",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        btn_preview_avatar.pack(side="left", padx=6)
+
+        # 本地物理摄像头真人动作捕捉驱动行
+        webcam_row = tk.Frame(card_video, bg=self.app.COLOR_CARD)
+        webcam_row.pack(fill="x", padx=16, pady=(4, 12))
+
+        tk.Label(webcam_row, text="📹 本地摄像头驱动:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
+
+        # 动态探测当前电脑实际物理/虚拟摄像头设备及真实硬件名称
+        cam_values = ["0: 默认摄像头"]
+        try:
+            from agent_core.video_call.webcam_tracker import probe_camera_devices
+            devs = probe_camera_devices()
+            if devs:
+                cam_values = [friendly for _, friendly in devs]
+        except Exception:
+            pass
+
+        self.var_webcam_device = tk.StringVar(value=cam_values[0])
+        self.combo_webcam_device = ttk.Combobox(
+            webcam_row,
+            textvariable=self.var_webcam_device,
+            values=cam_values,
+            state="readonly",
+            width=22
+        )
+        self.combo_webcam_device.pack(side="left", padx=6)
+
+        btn_refresh_webcam = tk.Button(
+            webcam_row,
+            text="🔄",
+            command=self.on_refresh_webcam_devices_click,
+            bg="#f1f5f9",
+            fg="#475569",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8),
+            cursor="hand2"
+        )
+        btn_refresh_webcam.pack(side="left", padx=(0, 6))
+
+        self.btn_toggle_webcam_driver = tk.Button(
+            webcam_row,
+            text="📹 开启本地摄像头动作驱动",
+            command=self.on_toggle_webcam_driver_click,
+            bg="#f0fdf4",
+            fg="#166534",
+            activebackground="#dcfce7",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        self.btn_toggle_webcam_driver.pack(side="left", padx=6)
+
+        self.lbl_webcam_driver_status = tk.Label(
+            webcam_row,
+            text="⚪ 未启动 (支持真人坐摄像头前，眨眼/说话/转头实时复刻驱动数字人)",
+            bg=self.app.COLOR_CARD,
+            fg=self.app.COLOR_MUTED,
+            font=("Microsoft YaHei UI", 8)
+        )
+        self.lbl_webcam_driver_status.pack(side="left", padx=4)
+
+        btn_download_models = tk.Button(
+            vcam_row,
+            text="📥 下载数字人模型 (LivePortrait / MuseTalk)",
+            command=self.on_download_avatar_models_click,
+            bg="#fef3c7",
+            fg="#b45309",
+            activebackground="#fde68a",
+            relief="flat",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2"
+        )
+        btn_download_models.pack(side="left", padx=6)
+
+        # ---------------------------------------------------------------------
         # 卡片 4: 实时通话字幕与对话监控看板
         # ---------------------------------------------------------------------
         card_log = tk.Frame(scroll_frame, bg=self.app.COLOR_CARD, bd=1, relief="solid", highlightbackground=self.app.COLOR_BORDER, highlightthickness=1)
@@ -487,6 +687,7 @@ class VoIPTabBuilder:
         self.refresh_audio_devices()
         self._update_stt_status_ui()
         self._update_tts_status_ui()
+        self._update_vcam_status_ui()
         self._populate_voices_dropdown()
 
     # -------------------------------------------------------------------------
@@ -1051,6 +1252,613 @@ class VoIPTabBuilder:
         except Exception:
             os.system("start ms-settings:sound")
 
+    def _update_vcam_status_ui(self):
+        """检测虚拟摄像头驱动状态"""
+        def _check():
+            try:
+                from agent_core.video_call.video_router import check_virtual_camera_available
+                ok, msg = check_virtual_camera_available()
+            except Exception as e:
+                ok, msg = False, str(e)
+
+            def _apply():
+                if hasattr(self, "lbl_vcam_status") and self.lbl_vcam_status:
+                    if ok:
+                        self.lbl_vcam_status.configure(text=f"✅ 虚拟摄像头已就绪 ({msg})", fg=self.app.COLOR_SUCCESS)
+                    else:
+                        self.lbl_vcam_status.configure(text=f"⚠️ {msg}", fg=self.app.COLOR_WARNING)
+
+            if hasattr(self.app, "root") and self.app.root:
+                self.app.root.after(0, _apply)
+
+        threading.Thread(target=_check, daemon=True, name="CheckVCam").start()
+
+    def on_avatar_engine_changed(self, event=None):
+        """用户在运行时切换数字人引擎 (异步后台加载与预热，杜绝 UI 界面卡死)"""
+        val = self.var_avatar_engine.get().lower()
+        if "wav2lip" in val:
+            target_eng = "wav2lip"
+        elif "liveportrait" in val:
+            target_eng = "liveportrait"
+        else:
+            target_eng = "musetalk"
+
+        self.combo_avatar_engine.config(state="disabled")
+        self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] ⏳ 正在后台切换并预热数字人推理引擎 [{target_eng}]，界面保持流畅...")
+
+        def _bg_switch():
+            try:
+                if self.call_agent and hasattr(self.call_agent, "avatar_manager") and self.call_agent.avatar_manager:
+                    self.call_agent.avatar_manager.set_engine_type(target_eng)
+                def _ui_done():
+                    self.combo_avatar_engine.config(state="readonly")
+                    self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 🎨 ✅ 数字人驱动引擎已成功切换并预热就绪: [{target_eng}]")
+                self.app.root.after(0, _ui_done)
+            except Exception as ex:
+                def _ui_err():
+                    self.combo_avatar_engine.config(state="readonly")
+                    self._append_voip_log("barge", f"[{time.strftime('%H:%M:%S')}] ⚠️ 引擎切换异常: {ex}")
+                self.app.root.after(0, _ui_err)
+
+        threading.Thread(target=_bg_switch, daemon=True, name="SwitchAvatarEngine").start()
+
+    def on_toggle_webcam_driver_click(self):
+        """用户开关本地真实物理摄像头动作驱动数字人"""
+        if not self.call_agent or not hasattr(self.call_agent, "avatar_manager") or not self.call_agent.avatar_manager:
+            messagebox.showinfo("提示", "数字人总控管理器尚未初始化！")
+            return
+
+        mgr = self.call_agent.avatar_manager
+        is_active = hasattr(mgr, "webcam_tracker") and mgr.webcam_tracker and mgr.webcam_tracker.is_running
+
+        if is_active:
+            mgr.stop_webcam_driver()
+            self.btn_toggle_webcam_driver.config(text="📹 开启本地摄像头动作驱动", bg="#f0fdf4", fg="#166534")
+            self.lbl_webcam_driver_status.config(text="⚪ 已关闭本地摄像头驱动", fg=self.app.COLOR_MUTED)
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] ⏹️ 已关闭本地物理摄像头动作捕捉驱动")
+        else:
+            dev_str = self.var_webcam_device.get()
+            dev_idx = 0
+            try:
+                import re
+                m = re.search(r'\d+', dev_str)
+                if m:
+                    dev_idx = int(m.group())
+            except Exception:
+                dev_idx = 0
+
+            ok = mgr.start_webcam_driver(device_index=dev_idx)
+            if ok:
+                self.btn_toggle_webcam_driver.config(text="⏹️ 停止摄像头动作驱动", bg="#fef2f2", fg="#991b1b")
+                self.lbl_webcam_driver_status.config(text=f"🟢 正在实时捕捉本地摄像头 [{dev_str}] 动作驱动数字人中...", fg="#16a34a")
+                self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 📹 成功开启本地物理摄像头 [{dev_str}] 动作捕捉驱动数字人！")
+            else:
+                messagebox.showwarning("摄像头打开失败", f"无法打开本地摄像头设备 [{dev_str}]，请检查是否已被其他软件占用。")
+
+    def on_refresh_webcam_devices_click(self):
+        """刷新探测本地物理/虚拟摄像头设备列表"""
+        try:
+            from agent_core.video_call.webcam_tracker import probe_camera_devices
+            devs = probe_camera_devices()
+            vals = [friendly for _, friendly in devs] if devs else ["0: 默认摄像头"]
+            self.combo_webcam_device['values'] = vals
+            cur = self.var_webcam_device.get()
+            if cur not in vals:
+                self.var_webcam_device.set(vals[0])
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 🔄 已刷新本地摄像头设备: {', '.join(vals)}")
+        except Exception as e:
+            logger.debug(f"[VoIPTabBuilder] 刷新摄像头列表异常: {e}")
+
+    def on_browse_avatar_image_click(self):
+        """浏览选择本地正面立绘"""
+        path = filedialog.askopenfilename(
+            title="选择人物正面立绘 (推荐 512x512 或 720x720 正面清晰半身照)",
+            filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.webp"), ("All files", "*.*")]
+        )
+        if path:
+            self.var_avatar_image.set(path)
+            if self.call_agent and hasattr(self.call_agent, "avatar_manager") and self.call_agent.avatar_manager:
+                ok = self.call_agent.avatar_manager.set_character_image(path)
+                if ok:
+                    self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] ✅ 成功更新正面人物立绘: {os.path.basename(path)}")
+                else:
+                    self._append_voip_log("barge", f"[{time.strftime('%H:%M:%S')}] ⚠️ 人物立绘加载失败: {path}")
+
+    def on_import_comfyui_image_click(self):
+        """从本地 ComfyUI 一键拉取最新生成的图像并设为立绘"""
+        def _fetch():
+            from agent_core.video_call.comfyui_bridge import ComfyUIBridge
+            c_url = getattr(self.config.voip, "comfyui_url", "http://127.0.0.1:8188")
+            bridge = ComfyUIBridge(c_url)
+            if not bridge.check_connection():
+                self.app.root.after(0, lambda: messagebox.showwarning("ComfyUI 未连接", "未检测到本地 ComfyUI 服务 (默认 http://127.0.0.1:8188)！\n请确保 ComfyUI 正在运行中。"))
+                return
+
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 🎨 正在从 ComfyUI 获取最新生成人物立绘...")
+            dest = bridge.fetch_latest_output_image("data/avatars")
+            if dest:
+                def _done():
+                    self.var_avatar_image.set(dest)
+                    if self.call_agent and hasattr(self.call_agent, "avatar_manager") and self.call_agent.avatar_manager:
+                        self.call_agent.avatar_manager.set_character_image(dest)
+                    self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] ✅ 成功从 ComfyUI 导入最新立绘: {os.path.basename(dest)}")
+                    messagebox.showinfo("导入成功", f"✅ 已成功导入 ComfyUI 最新生成的立绘！\n路径: {dest}")
+                self.app.root.after(0, _done)
+            else:
+                self.app.root.after(0, lambda: messagebox.showinfo("暂无图片", "ComfyUI 最近无图片生成历史，请在 ComfyUI 中运行一次工作流后再试。"))
+
+        threading.Thread(target=_fetch, daemon=True, name="FetchComfyUI").start()
+
+    def on_install_vcam_click(self):
+        """弹出虚拟摄像头驱动安装与选择对话框"""
+        win = tk.Toplevel(self.app.root)
+        win.title("🛠️ 安装虚拟摄像头驱动")
+        win.geometry("560x430")
+        win.configure(bg="#0F172A")
+        win.resizable(False, False)
+        win.transient(self.app.root)
+        win.grab_set()
+
+        # 头部标题
+        header = tk.Frame(win, bg="#0F172A")
+        header.pack(fill="x", padx=24, pady=(20, 12))
+        tk.Label(
+            header,
+            text="🎥 微信虚拟数字人视频驱动安装",
+            font=("Microsoft YaHei UI", 13, "bold"),
+            bg="#0F172A",
+            fg="#F8FAFC"
+        ).pack(anchor="w")
+        tk.Label(
+            header,
+            text="微信视频通话需要 DirectShow 虚拟摄像头驱动将数字人实时图像推送至通话窗口。",
+            font=("Microsoft YaHei UI", 9),
+            bg="#0F172A",
+            fg="#94A3B8"
+        ).pack(anchor="w", pady=(4, 0))
+
+        # 方案 1: UnityCapture (强烈推荐)
+        card1 = tk.Frame(win, bg="#1E293B", bd=1, relief="solid", highlightbackground="#334155", highlightthickness=1)
+        card1.pack(fill="x", padx=24, pady=8)
+
+        info1 = tk.Frame(card1, bg="#1E293B")
+        info1.pack(side="left", padx=16, pady=12, fill="both", expand=True)
+        tk.Label(info1, text="⚡ 方案 1: UnityCapture 独立驱动 (极力推荐)", font=("Microsoft YaHei UI", 10, "bold"), bg="#1E293B", fg="#38BDF8").pack(anchor="w")
+        tk.Label(info1, text="• 超轻量级 (仅 150KB)，无需下载安装 300MB 的 OBS 软件\n• 点击后弹出 Windows 管理员授权，1秒内极速注册生效", font=("Microsoft YaHei UI", 8), bg="#1E293B", fg="#CBD5E1", justify="left").pack(anchor="w", pady=(4, 0))
+
+        def _do_install_unity():
+            win.destroy()
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 正在请求管理员权限注册 UnityCapture 驱动...")
+
+            def _bg():
+                try:
+                    from tools.vcam.setup_vcam import install_unitycapture
+                    ok, msg = install_unitycapture()
+
+                    def _cb():
+                        self._update_vcam_status_ui()
+                        self._append_voip_log("info" if ok else "barge", f"[{time.strftime('%H:%M:%S')}] {msg}")
+                        if ok:
+                            messagebox.showinfo("安装完成", f"✅ {msg}\n\n请在微信客户端【设置 -> 声音与通话 -> 摄像头】中选择「Unity Video Capture」即可！")
+                        else:
+                            messagebox.showwarning("提示", f"注册结果: {msg}")
+
+                    self.app.root.after(0, _cb)
+                except Exception as ex:
+                    self.app.root.after(0, lambda: messagebox.showerror("错误", f"安装异常: {ex}"))
+
+            threading.Thread(target=_bg, daemon=True, name="InstallUnityVCam").start()
+
+        btn_u = tk.Button(
+            card1,
+            text="🚀 一键秒级注册",
+            command=_do_install_unity,
+            bg="#0284C7",
+            fg="#FFFFFF",
+            activebackground="#0369A1",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=6
+        )
+        btn_u.pack(side="right", padx=16)
+
+        # 方案 2: WinGet OBS Studio
+        card2 = tk.Frame(win, bg="#1E293B", bd=1, relief="solid", highlightbackground="#334155", highlightthickness=1)
+        card2.pack(fill="x", padx=24, pady=6)
+
+        info2 = tk.Frame(card2, bg="#1E293B")
+        info2.pack(side="left", padx=16, pady=10, fill="both", expand=True)
+        tk.Label(info2, text="🎥 方案 2: OBS Studio 官方虚拟摄像头", font=("Microsoft YaHei UI", 10, "bold"), bg="#1E293B", fg="#A78BFA").pack(anchor="w")
+        tk.Label(info2, text="• 通过 WinGet 自动安装 OBS (已锁定官方 winget 源，避开商店报错)\n• 安装后需在 OBS 点击一次【启动虚拟摄像机】", font=("Microsoft YaHei UI", 8), bg="#1E293B", fg="#CBD5E1", justify="left").pack(anchor="w", pady=(4, 0))
+
+        def _do_winget():
+            from tools.vcam.setup_vcam import install_obs_winget
+            install_obs_winget()
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 已打开 WinGet 安装终端...")
+
+        btn_w = tk.Button(
+            card2,
+            text="📦 WinGet 安装",
+            command=_do_winget,
+            bg="#7C3AED",
+            fg="#FFFFFF",
+            activebackground="#6D28D9",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=10,
+            pady=6
+        )
+        btn_w.pack(side="right", padx=16)
+
+        # 底部操作栏: 浏览器官网下载 / 打开控制台菜单 / 取消
+        bottom = tk.Frame(win, bg="#0F172A")
+        bottom.pack(fill="x", padx=24, pady=(18, 12))
+
+        def _open_web():
+            from tools.vcam.setup_vcam import open_obs_download
+            open_obs_download()
+
+        def _open_bat():
+            win.destroy()
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            bat = os.path.join(base_dir, "install_vcam.bat")
+            if os.path.exists(bat):
+                os.system(f'start "" "{bat}"')
+
+        tk.Button(bottom, text="🌐 浏览器前往 OBS 官网", command=_open_web, bg="#334155", fg="#94A3B8", relief="flat", font=("Microsoft YaHei UI", 8), cursor="hand2").pack(side="left")
+        tk.Button(bottom, text="💻 打开终端管理菜单", command=_open_bat, bg="#334155", fg="#94A3B8", relief="flat", font=("Microsoft YaHei UI", 8), cursor="hand2", padx=6).pack(side="left", padx=8)
+        tk.Button(bottom, text="关闭", command=win.destroy, bg="#1E293B", fg="#E2E8F0", relief="flat", font=("Microsoft YaHei UI", 8), cursor="hand2", padx=12).pack(side="right")
+
+    def on_preview_avatar_click(self):
+        """打开实时数字人预览窗口并支持音画同步口型播音测试"""
+        if not self.call_agent or not hasattr(self.call_agent, "avatar_manager") or not self.call_agent.avatar_manager:
+            messagebox.showwarning("组件未初始化", "数字人总控引擎尚未完成初始化！")
+            return
+
+        preview_win = tk.Toplevel(self.app.root)
+        preview_win.title("👁️ 实时虚拟数字人画面预览与口型测试 (25 FPS)")
+        preview_win.geometry("520x600")
+        preview_win.configure(bg="#0F172A")
+        preview_win.resizable(False, False)
+
+        canvas = tk.Canvas(preview_win, width=460, height=460, bg="#000000", highlightthickness=0)
+        canvas.pack(pady=12)
+
+        ctrl_frame = tk.Frame(preview_win, bg="#0F172A")
+        ctrl_frame.pack(fill="x", padx=20, pady=8)
+
+        lbl_fps = tk.Label(ctrl_frame, text="🟢 25 FPS 实时渲染中", bg="#0F172A", fg="#38BDF8", font=("Microsoft YaHei UI", 9))
+        lbl_fps.pack(side="left")
+
+        # 线程安全的发音嘴型帧缓冲队列
+        preview_frames_queue: queue.Queue = queue.Queue(maxsize=1200)
+
+        def _test_speech():
+            txt = "你好！我是微信电话虚拟数字人助手，当前正在测试音画同步口型！"
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 正在准备测试音频并实时驱动数字人嘴唇...")
+            btn_speak.config(state="disabled", text="🔊 正在实时驱动口型与发音...")
+            lbl_fps.config(text="🗣️ 嘴唇口型实时驱动中...", fg="#00E6A7")
+
+            def _speak():
+                try:
+                    pcm = None
+                    rate = 24000
+                    # 优先读取预置/缓存的高保真口型测试音频 (0ms 零延迟极速响应)
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    cached_wav = os.path.join(base_dir, "models", "test_avatar_speech.wav")
+                    if os.path.exists(cached_wav):
+                        try:
+                            import soundfile as sf
+                            data, sr = sf.read(cached_wav, dtype='int16')
+                            pcm = data.tobytes()
+                            rate = sr
+                        except Exception as e:
+                            logger.debug(f"读取缓存测试音频跳过: {e}")
+
+                    if not pcm:
+                        # 调用 TTS 引擎生成高保真音频
+                        pcm, rate = self.call_agent.tts_manager.synthesize(txt)
+
+                    if pcm:
+                        # 2. 将音频切片交由数字人驱动引擎提取能量与音画口型帧
+                        frames = self.call_agent.avatar_manager.process_audio_chunk(pcm, sample_rate=rate)
+
+                        # 清空旧队列并存入口型帧序列
+                        while not preview_frames_queue.empty():
+                            try:
+                                preview_frames_queue.get_nowait()
+                            except Exception:
+                                break
+
+                        # 3. 驱动扬声器真实播放声音 (实现人耳听感与画面嘴型完全同步)
+                        try:
+                            import sounddevice as sd
+                            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+                            # 非阻塞启动播放
+                            sd.play(samples, samplerate=rate)
+                        except Exception as snd_err:
+                            logger.debug(f"测试声音播放跳过: {snd_err}")
+
+                        for f in frames:
+                            try:
+                                preview_frames_queue.put(f, timeout=0.05)
+                            except queue.Full:
+                                break
+
+                        # 语音结束追加 5 帧自然平滑闭嘴收口帧，杜绝画面定格在张大嘴状态
+                        idle_base = self.call_agent.avatar_manager.generate_idle_frame()
+                        if frames and len(frames) > 0:
+                            last_f = frames[-1]
+                            for c_idx in range(1, 6):
+                                alpha = (5 - c_idx) / 5.0
+                                fade_f = cv2.addWeighted(last_f, alpha, idle_base, 1.0 - alpha, 0.0)
+                                try:
+                                    preview_frames_queue.put(fade_f, timeout=0.05)
+                                except queue.Full:
+                                    break
+
+                        # 4. 若真实视频通话推流器正在工作中，亦同步注入
+                        if hasattr(self.call_agent, "video_router") and self.call_agent.video_router and self.call_agent.video_router.is_running:
+                            self.call_agent.video_router.put_audio(pcm, sample_rate=rate)
+
+                        # 阻塞等待声音播放完毕
+                        try:
+                            import sounddevice as sd
+                            sd.wait()
+                        except Exception:
+                            pass
+
+                        self.app.root.after(0, lambda: self._append_voip_log("ai", f"[{time.strftime('%H:%M:%S')}] 口型测试演示完成 (生成 {len(frames)} 帧)"))
+                except Exception as ex:
+                    logger.error(f"口型发音测试异常: {ex}", exc_info=True)
+                finally:
+                    def _reset():
+                        try:
+                            if preview_win.winfo_exists():
+                                btn_speak.config(state="normal", text="🗣️ 播放测试语句验证口型")
+                                lbl_fps.config(text="🟢 25 FPS 实时渲染中", fg="#38BDF8")
+                        except Exception:
+                            pass
+                    self.app.root.after(0, _reset)
+
+            threading.Thread(target=_speak, daemon=True, name="PreviewAvatarSpeech").start()
+
+        btn_speak = tk.Button(
+            ctrl_frame,
+            text="🗣️ 播放测试语句验证口型",
+            command=_test_speech,
+            bg="#2563EB",
+            fg="#FFFFFF",
+            relief="flat",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=4,
+            cursor="hand2"
+        )
+        btn_speak.pack(side="right")
+
+        # 实时循环刷新画面 (严格 25 FPS = 40ms，单项画布复用消除内存与卡顿)
+        is_preview_running = [True]
+        from PIL import Image, ImageTk
+        canvas_img_id = [None]
+        photo_ref = [None]
+
+        def _update_frame():
+            if not is_preview_running[0]:
+                return
+            try:
+                frame_rgb = None
+                # 若发音队列有待播放口型帧，优先取出播放；无发音帧时平滑过渡回待机微动
+                if not preview_frames_queue.empty():
+                    try:
+                        frame_rgb = preview_frames_queue.get_nowait()
+                    except Exception:
+                        pass
+                elif getattr(self.call_agent.avatar_manager, "_latest_webcam_driven_frame", None) is not None:
+                    frame_rgb = self.call_agent.avatar_manager._latest_webcam_driven_frame
+
+                if frame_rgb is None:
+                    frame_rgb = self.call_agent.avatar_manager.generate_idle_frame()
+
+                if frame_rgb is not None:
+                    im = Image.fromarray(frame_rgb)
+                    im = im.resize((460, 460), Image.Resampling.BILINEAR)
+                    photo = ImageTk.PhotoImage(im)
+                    photo_ref[0] = photo
+                    if canvas_img_id[0] is None:
+                        canvas_img_id[0] = canvas.create_image(0, 0, anchor="nw", image=photo)
+                    else:
+                        canvas.itemconfig(canvas_img_id[0], image=photo)
+                    canvas.image = photo
+            except Exception:
+                pass
+            if is_preview_running[0]:
+                preview_win.after(40, _update_frame)
+
+        def _on_close():
+            is_preview_running[0] = False
+            preview_win.destroy()
+
+        preview_win.protocol("WM_DELETE_WINDOW", _on_close)
+        preview_win.after(50, _update_frame)
+
+    def on_download_avatar_models_click(self):
+        """弹出数字人模型下载管理器"""
+        from scripts.download_avatar_models import (
+            check_liveportrait_status,
+            check_wav2lip_status,
+            check_musetalk_status,
+            download_liveportrait,
+            download_wav2lip,
+            download_musetalk,
+        )
+
+        win = tk.Toplevel(self.app.root)
+        win.title("📥 数字人驱动模型高速下载器")
+        win.geometry("580x520")
+        win.configure(bg="#0F172A")
+        win.resizable(False, False)
+        win.transient(self.app.root)
+        win.grab_set()
+
+        # 头部
+        header = tk.Frame(win, bg="#0F172A")
+        header.pack(fill="x", padx=24, pady=(20, 10))
+        tk.Label(header, text="🧠 下载离线开源数字人驱动模型", font=("Microsoft YaHei UI", 13, "bold"), bg="#0F172A", fg="#F8FAFC").pack(anchor="w")
+        tk.Label(header, text="所有模型文件均直接保存在本项目 models/ 目录下，绝不占用系统 C 盘空间！", font=("Microsoft YaHei UI", 9), bg="#0F172A", fg="#38BDF8").pack(anchor="w", pady=(2, 0))
+
+        # 卡片 1: LivePortrait-Realtime
+        card_lp = tk.Frame(win, bg="#1E293B", bd=1, relief="solid", highlightbackground="#334155", highlightthickness=1)
+        card_lp.pack(fill="x", padx=24, pady=6)
+
+        info_lp = tk.Frame(card_lp, bg="#1E293B")
+        info_lp.pack(side="left", padx=16, pady=10, fill="both", expand=True)
+        tk.Label(info_lp, text="⚡ LivePortrait-Realtime (FasterLivePortrait ONNX)", font=("Microsoft YaHei UI", 10, "bold"), bg="#1E293B", fg="#38BDF8").pack(anchor="w")
+        tk.Label(info_lp, text="• 显存需求: 1.5GB ~ 2GB | 纯 ONNX GPU 极速推理 (30+ FPS)\n• 规格大小: ~642 MB (全脸表情与头部微动)", font=("Microsoft YaHei UI", 8), bg="#1E293B", fg="#CBD5E1", justify="left").pack(anchor="w", pady=(2, 0))
+
+        lp_ok, lp_found, lp_total = check_liveportrait_status()
+        lbl_lp_st = tk.Label(info_lp, text=f"状态: {'✅ 已完整就绪' if lp_ok else f'⚠️ 尚未下载 ({lp_found}/{lp_total} 文件)'}", font=("Microsoft YaHei UI", 8, "bold"), bg="#1E293B", fg="#10B981" if lp_ok else "#F59E0B")
+        lbl_lp_st.pack(anchor="w", pady=(3, 0))
+
+        def _do_dl_lp():
+            btn_dl_lp.config(state="disabled", text="⏳ 正在下载...")
+            def _prog(msg, p):
+                lbl_lp_st.config(text=f"进度: {msg} ({int(p*100)}%)", fg="#38BDF8")
+            def _worker():
+                download_liveportrait(_prog)
+                def _done():
+                    ok, f, t = check_liveportrait_status()
+                    btn_dl_lp.config(state="normal", text="🚀 开始高速下载")
+                    lbl_lp_st.config(text=f"状态: {'✅ 已完整就绪' if ok else f'⚠️ 未完成 ({f}/{t})'}", fg="#10B981" if ok else "#F59E0B")
+                    if ok:
+                        messagebox.showinfo("下载完成", "✅ LivePortrait-Realtime 模型已全部下载并就绪！")
+                self.app.root.after(0, _done)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_dl_lp = tk.Button(card_lp, text="🚀 开始高速下载", command=_do_dl_lp, bg="#0284C7", fg="#FFFFFF", relief="flat", font=("Microsoft YaHei UI", 9, "bold"), cursor="hand2", padx=10, pady=5)
+        btn_dl_lp.pack(side="right", padx=16)
+
+        # 卡片 2: Wav2Lip-Realtime (GAN 高清修复 / OpenTalking 推荐)
+        card_w2l = tk.Frame(win, bg="#1E293B", bd=1, relief="solid", highlightbackground="#334155", highlightthickness=1)
+        card_w2l.pack(fill="x", padx=24, pady=6)
+
+        info_w2l = tk.Frame(card_w2l, bg="#1E293B")
+        info_w2l.pack(side="left", padx=16, pady=10, fill="both", expand=True)
+        tk.Label(info_w2l, text="👄 Wav2Lip-Realtime (GAN 音素口型补全 / OpenTalking 推荐)", font=("Microsoft YaHei UI", 10, "bold"), bg="#1E293B", fg="#34D399").pack(anchor="w")
+        tk.Label(info_w2l, text="• 显存需求: 1GB ~ 2GB | 纯音频梅尔频谱音素级精准对齐 (30~50 FPS)\n• 规格大小: ~415 MB (单机消费卡推荐，原图高频细节 100% 保持)", font=("Microsoft YaHei UI", 8), bg="#1E293B", fg="#CBD5E1", justify="left").pack(anchor="w", pady=(2, 0))
+
+        w2l_ok, w2l_found, w2l_total = check_wav2lip_status()
+        lbl_w2l_st = tk.Label(info_w2l, text=f"状态: {'✅ 已完整就绪' if w2l_ok else '⚠️ 尚未下载 (wav2lip_gan.pth)'}", font=("Microsoft YaHei UI", 8, "bold"), bg="#1E293B", fg="#10B981" if w2l_ok else "#F59E0B")
+        lbl_w2l_st.pack(anchor="w", pady=(3, 0))
+
+        def _do_dl_w2l():
+            btn_dl_w2l.config(state="disabled", text="⏳ 正在下载...")
+            def _prog(msg, p):
+                lbl_w2l_st.config(text=f"进度: {msg} ({int(p*100)}%)", fg="#34D399")
+            def _worker():
+                download_wav2lip(_prog)
+                def _done():
+                    ok, f, t = check_wav2lip_status()
+                    btn_dl_w2l.config(state="normal", text="🚀 开始高速下载")
+                    lbl_w2l_st.config(text=f"状态: {'✅ 已完整就绪' if ok else '⚠️ 未完成'}", fg="#10B981" if ok else "#F59E0B")
+                    if ok:
+                        messagebox.showinfo("下载完成", "✅ Wav2Lip-GAN 权重已全部下载就绪！\n可直接在界面选择 Wav2Lip 引擎驱动数字人。")
+                self.app.root.after(0, _done)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_dl_w2l = tk.Button(card_w2l, text="🚀 开始高速下载", command=_do_dl_w2l, bg="#059669", fg="#FFFFFF", relief="flat", font=("Microsoft YaHei UI", 9, "bold"), cursor="hand2", padx=10, pady=5)
+        btn_dl_w2l.pack(side="right", padx=16)
+
+        # 卡片 3: MuseTalk
+        card_mt = tk.Frame(win, bg="#1E293B", bd=1, relief="solid", highlightbackground="#334155", highlightthickness=1)
+        card_mt.pack(fill="x", padx=24, pady=6)
+
+        info_mt = tk.Frame(card_mt, bg="#1E293B")
+        info_mt.pack(side="left", padx=16, pady=10, fill="both", expand=True)
+        tk.Label(info_mt, text="🎭 MuseTalk (Tencent / UNet 唇形在屏修复)", font=("Microsoft YaHei UI", 10, "bold"), bg="#1E293B", fg="#A78BFA").pack(anchor="w")
+        tk.Label(info_mt, text="• 显存需求: 4GB ~ 6GB | 基于音频潜变量的重绘修复\n• 规格大小: ~3.2 GB (高精修复模型)", font=("Microsoft YaHei UI", 8), bg="#1E293B", fg="#CBD5E1", justify="left").pack(anchor="w", pady=(2, 0))
+
+        mt_ok, mt_found, mt_total = check_musetalk_status()
+        lbl_mt_st = tk.Label(info_mt, text=f"状态: {'✅ 已完整就绪' if mt_ok else f'⚠️ 尚未下载 ({mt_found}/{mt_total} 文件)'}", font=("Microsoft YaHei UI", 8, "bold"), bg="#1E293B", fg="#10B981" if mt_ok else "#F59E0B")
+        lbl_mt_st.pack(anchor="w", pady=(3, 0))
+
+        def _do_dl_mt():
+            btn_dl_mt.config(state="disabled", text="⏳ 正在下载...")
+            def _prog(msg, p):
+                lbl_mt_st.config(text=f"进度: {msg} ({int(p*100)}%)", fg="#A78BFA")
+            def _worker():
+                download_musetalk(_prog)
+                def _done():
+                    ok, f, t = check_musetalk_status()
+                    btn_dl_mt.config(state="normal", text="🚀 开始高速下载")
+                    lbl_mt_st.config(text=f"状态: {'✅ 已完整就绪' if ok else f'⚠️ 未完成 ({f}/{t})'}", fg="#10B981" if ok else "#F59E0B")
+                    if ok:
+                        messagebox.showinfo("下载完成", "✅ MuseTalk 模型已全部下载并就绪！")
+                self.app.root.after(0, _done)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_dl_mt = tk.Button(card_mt, text="🚀 开始高速下载", command=_do_dl_mt, bg="#7C3AED", fg="#FFFFFF", relief="flat", font=("Microsoft YaHei UI", 9, "bold"), cursor="hand2", padx=10, pady=5)
+        btn_dl_mt.pack(side="right", padx=16)
+
+        # 底部
+        bottom = tk.Frame(win, bg="#0F172A")
+        bottom.pack(fill="x", padx=24, pady=(16, 12))
+        tk.Button(bottom, text="关闭窗口", command=win.destroy, bg="#334155", fg="#E2E8F0", relief="flat", font=("Microsoft YaHei UI", 9), cursor="hand2", padx=14).pack(side="right")
+
+    def on_toggle_webcam_driver_click(self):
+        """开启或关闭本地物理摄像头动作捕捉驱动数字人"""
+        if not self.call_agent or not hasattr(self.call_agent, "avatar_manager") or not self.call_agent.avatar_manager:
+            messagebox.showwarning("组件未初始化", "数字人总控引擎尚未完成初始化！")
+            return
+
+        av_mgr = self.call_agent.avatar_manager
+        is_running = hasattr(av_mgr, "webcam_tracker") and av_mgr.webcam_tracker and av_mgr.webcam_tracker.is_running
+
+        if is_running:
+            av_mgr.stop_webcam_driver()
+            self.btn_toggle_webcam_driver.config(
+                text="📹 开启本地摄像头动作驱动",
+                bg="#f0fdf4",
+                fg="#166534",
+                activebackground="#dcfce7"
+            )
+            self.lbl_webcam_driver_status.config(
+                text="⚪ 未启动 (支持真人坐摄像头前，眨眼/说话/转头实时复刻驱动数字人)",
+                fg=self.app.COLOR_MUTED
+            )
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 📹 本地摄像头数字人动作驱动已停止")
+        else:
+            dev_str = self.var_webcam_device.get()
+            try:
+                dev_idx = int(dev_str.replace("摄像头", "").strip())
+            except Exception:
+                dev_idx = 0
+
+            self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] 正在探测并启动本地物理摄像头设备 [{dev_str}]...")
+            ok = av_mgr.start_webcam_driver(device_index=dev_idx)
+            if ok:
+                self.btn_toggle_webcam_driver.config(
+                    text="⏹ 停止本地摄像头动作驱动",
+                    bg="#fef2f2",
+                    fg="#b91c1c",
+                    activebackground="#fee2e2"
+                )
+                self.lbl_webcam_driver_status.config(
+                    text="🟢 动作驱动中 (真人眨眼/张嘴/头部转动实时驱动中，可点击上方「👁️ 启动实时测试预览窗口」查看)",
+                    fg="#10B981"
+                )
+                self._append_voip_log("info", f"[{time.strftime('%H:%M:%S')}] ✅ 本地摄像头动作驱动已启动，已开启 25 FPS 动作重定向！")
+            else:
+                self.lbl_webcam_driver_status.config(
+                    text=f"❌ 无法打开设备 [{dev_str}]，请确认摄像头未被其它软件独占",
+                    fg="#EF4444"
+                )
+                self._append_voip_log("barge", f"[{time.strftime('%H:%M:%S')}] ⚠️ 打开本地摄像头 {dev_idx} 失败，请确认设备连接正常")
+                messagebox.showerror("摄像头打开失败", f"无法打开物理摄像头 [{dev_str}]！\n请确认摄像头已插好且未被其他视频软件独占。")
+
     def on_save_voip_config_click(self):
         """保存电话智能体配置"""
         try:
@@ -1098,6 +1906,17 @@ class VoIPTabBuilder:
             cfg.virtual_input_device = self.var_in_dev.get().strip()
             cfg.virtual_output_device = self.var_out_dev.get().strip()
 
+            if hasattr(self, "var_video_enabled"):
+                cfg.video_enabled = self.var_video_enabled.get()
+                av_val = self.var_avatar_engine.get().lower()
+                if "wav2lip" in av_val:
+                    cfg.avatar_engine = "wav2lip"
+                elif "liveportrait" in av_val:
+                    cfg.avatar_engine = "liveportrait"
+                else:
+                    cfg.avatar_engine = "musetalk"
+                cfg.avatar_image_path = self.var_avatar_image.get().strip()
+
             self.config.save()
             if self.call_agent:
                 self.call_agent.reload_config(self.config)
@@ -1140,14 +1959,16 @@ class VoIPTabBuilder:
         if ev_type == "call_incoming":
             caller = data.get("caller", "微信好友")
             is_group = data.get("is_group", False)
-            tag_name = "群聊语音" if is_group else "微信语音"
+            is_video = data.get("is_video", False)
+            tag_name = "微信视频" if is_video else ("群聊语音" if is_group else "微信语音")
             self.lbl_voip_badge.configure(text=f"📞 来电振铃中: {caller}", bg="#4A1D96", fg="#C084FC")
             self._append_voip_log("info", f"[{now_str}] 🔔 【检测到{tag_name}来电】 来自 [{caller}]，正在准备执行自动接听...")
 
         elif ev_type == "call_connected":
             caller = data.get("caller", "")
             is_group = data.get("is_group", False)
-            tag_name = "群聊通话" if is_group else "微信通话"
+            is_video = data.get("is_video", False)
+            tag_name = "微信视频" if is_video else ("群聊通话" if is_group else "微信通话")
             self.lbl_voip_badge.configure(text=f"🔵 正在通话: {caller}", bg="#0D2750", fg="#38BDF8")
             self._append_voip_log("info", f"[{now_str}] 📞 【{tag_name}已接通】 开始与 [{caller}] 实时对话")
 

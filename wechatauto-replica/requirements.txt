@@ -39,4 +39,5 @@ kokoro-onnx>=0.3.0
 onnxruntime-gpu>=1.18.0
 espeakng-loader>=0.2.0
 phonemizer>=3.0.0
+pyvirtualcam>=0.11.0
 

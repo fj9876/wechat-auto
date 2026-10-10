@@ -10,6 +10,17 @@ REM set "PYTHONNOUSERSITE=1"
 set "PYTHONUNBUFFERED=1"
 set "PYTHONIOENCODING=utf-8"
 
+REM 彻底将所有 AI 模型与缓存路径重定向至本项目 models 目录 (坚决不占用 C 盘空间)
+set "PROJECT_MODELS=%CD%\models"
+if not exist "%PROJECT_MODELS%" (
+    if exist "%~dp0wechatauto-replica\models" set "PROJECT_MODELS=%~dp0wechatauto-replica\models"
+    if exist "%~dp0models" set "PROJECT_MODELS=%~dp0models"
+)
+set "MODELSCOPE_CACHE=%PROJECT_MODELS%\modelscope"
+set "HF_HOME=%PROJECT_MODELS%\huggingface"
+set "HUGGINGFACE_HUB_CACHE=%PROJECT_MODELS%\huggingface\hub"
+set "TORCH_HOME=%PROJECT_MODELS%\torch"
+
 set "PYTHON_EXE="
 
 REM 1. Check portable runtime

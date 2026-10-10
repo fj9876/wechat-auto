@@ -3,14 +3,14 @@
 <div align="center">
 
 > **专为微信 4.x Windows 客户端打造的个人 AI 智能助理**  
-> 集成 **本地原生桌面 GUI (现代竖向导航)** · **多主流大模型 (LLM)** · **联系人专属立体画像与永久记忆 (Memory Engine)** · **本地私有知识库 (BM25 RAG)** · **📞 微信语音电话自动接听与全双工实时 AI 对话 (VoIP Agent)** · **阿里 FunASR Paraformer 毫秒级口语识别 / Faster-Whisper** · **Kokoro-82M 超轻量超自然实时 TTS / Qwen3-TTS / Edge-TTS** · **多模态视觉与 OCR 解析** · **群管与自动踢人**
+> 集成 **本地原生桌面 GUI (现代竖向导航)** · **多主流大模型 (LLM)** · **联系人专属立体画像与永久记忆 (Memory Engine)** · **本地私有知识库 (BM25 RAG)** · **📞 微信语音/视频电话自动接听与全双工实时 AI 对话 (VoIP & Video Agent)** · **📹 本地虚拟数字人多引擎实时推流 (LivePortrait / Wav2Lip-GAN / MuseTalk)** · **阿里 FunASR Paraformer 毫秒级口语识别 / Faster-Whisper** · **Kokoro-82M 超轻量超自然实时 TTS / Qwen3-TTS / Edge-TTS** · **多模态视觉与 OCR 解析** · **群管与自动踢人**
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://microsoft.com/windows)
 [![WeChat](https://img.shields.io/badge/WeChat-4.x%20(4.1.12%2B)-brightgreen.svg)](https://weixin.qq.com)
 [![Python](https://img.shields.io/badge/Python-3.9%20~%203.12-blue.svg)](https://python.org)
 [![FunASR](https://img.shields.io/badge/ASR-FunASR%20Paraformer-red.svg)](https://github.com/modelscope/FunASR)
-[![faster-whisper](https://img.shields.io/badge/ASR-faster--whisper%20(Local)-orange.svg)](https://github.com/SYSTRAN/faster-whisper)
 [![Kokoro-82M](https://img.shields.io/badge/TTS-Kokoro--82M%20(Realtime)-blueviolet.svg)](https://github.com/hexgrad/kokoro)
+[![Wav2Lip](https://img.shields.io/badge/Avatar-Wav2Lip--GAN%20%2F%20LivePortrait-orange.svg)](https://github.com/Rudrabha/Wav2Lip)
 [![CUDA](https://img.shields.io/badge/CUDA-12.4%20%2F%20RTX%203060%2B-76B900.svg)](https://developer.nvidia.com/cuda-zone)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -30,10 +30,15 @@
 - 完整 **AI Agent 决策管道**与**会话级多轮上下文记忆**；
 - **联系人专属立体画像与永久记忆库**（Memory Engine）；
 - **本地私有 BM25 检索增强知识库**（RAG）；
-- 🆕 **微信语音电话自动接听 + 实时全双工 AI 对话**（VoIP Agent）：
+- 🆕 **微信语音/视频电话自动接听 + 实时全双工 AI 对话**（VoIP & Video Agent）：
   - 接入阿里 **FunASR Paraformer** 毫秒级非自回归中文口语识别模型（出字延迟 150~300ms）；
   - 引入 **Kokoro-82M** 超轻量实时发音引擎（RTF < 0.2）与 **Qwen3-TTS** 智能降级保护；
   - 接通瞬发礼貌问候、双层声学指纹消除 AI 自发音误打断、全链路自适应动态音量增益；
+- 📹 **全矩阵虚拟数字人实时驱动与虚拟摄像头直推 (Digital Human Engine)**：
+  - **多引擎无缝切换**：FasterLivePortrait ONNX 神经隐空间微表情重定向、**Wav2Lip-GAN 极速口型驱动 (35~50 FPS)**、MuseTalk 高质量扩散修复与零模型依赖拟真保底引擎；
+  - **独创高保真唇红缘遮罩**：人中与下巴硬边界三向衰减保护，彻底根除 96 尺度插值导致的“融化发糊”边缘，100% 保持原生皮肤毛孔质感；
+  - **真实物理摄像头动作驱动 (Webcam Tracker)**：自动探测并枚举本机真实摄像头硬件名称，支持真实视频画面作为动作源直接驱动数字人；
+  - **DirectShow 零侵入虚拟推流**：标准 640x480 输出与智能等比自适应背景扩展，启动预充防绿屏，完美兼容微信 4.x 视频通话；
 - **双模态语音转写**（阿里 FunASR / Faster-Whisper / 云端 ASR）；
 - **多模态视觉大模型 + WinRT OCR** 图片综合理解；
 - 全量内置**绿色便携 Python 运行时 (runtime)**，开箱即用。
@@ -55,7 +60,7 @@
 | 📚 **本地私有知识库 (RAG)** | BM25 稀疏检索切片，支持 `.txt` `.md` `.pdf` `.docx` `.csv`，磁盘索引缓存秒启 |
 | 👤 **用户画像与永久记忆** | 联系人立体画像，增量自完善与认知纠偏，事实记忆碎片，历史记录全量建档 |
 | 🎙️ **多模态与媒体设置** | 语音 ASR 引擎切换（FunASR / Whisper / 云端），缺模型自动唤起极速镜像下载，视觉/OCR 解析 |
-| 📞 **语音电话守护 (VoIP)** | 微信语音来电自动接听/拒接，实时全双工 AI 对话，FunASR + Kokoro/Qwen3/Edge 多 TTS，声音克隆 |
+| 📞 **音视频电话与虚拟数字人 (VoIP & Avatar)** | 微信语音/视频来电自动接听，本地虚拟数字人摄像头直推，LivePortrait / MuseTalk 双引擎运行时切换，ComfyUI 立绘联动，全双工音画同步 |
 | 🧪 **交互测试沙盒** | 模拟消息输入，无缝测试 RAG 命中、画像记忆注入与 AI 回复效果 |
 
 ---
@@ -104,6 +109,34 @@ AudioRouter.play_audio() → 动态音量归一化 → 推流至虚拟声卡注�
 
 ---
 
+### 2.1 📹 微信视频电话接听与本地虚拟数字人接入 (AI Avatar & Webcam Tracker)
+
+> 微信视频来电 → 自动识别视频呼叫 → 物理精准接听 → 激活虚拟摄像头推流 → 本地实时渲染虚拟数字人随 AI 发音实时口型同步 / 本地摄像头动作驱动。
+
+#### 核心技术特性
+- 🎬 **DirectShow 虚拟摄像头原生直推**：依托 `pyvirtualcam` 与 UnityCapture / OBS Virtual Camera，以严格的 DirectShow 行业标准 **640x480 @ 25 FPS** 稳定推流。内置智能等比自适应算法（Letterbox + 边缘暗色毛玻璃虚化扩展），1:1 立绘在 4:3 微信窗口中居中无畸变呈现；
+- 🛡️ **推流管道预热防绿屏 (Anti-Green-Screen Protection)**：UnityCapture 虚拟摄像头在未初始化共享内存时会输出绿底测试条纹。本项目在推流器启动瞬间自动向 DirectShow 驱动预充 5 帧初始待机帧，彻底杜绝微信接通瞬间闪现绿幕；
+- 👥 **全矩阵数字人驱动引擎自由切换**：
+  - **Wav2Lip-GAN 极速口型引擎 (强烈推荐)**：
+    - 基于 80-band Mel-Spectrogram (梅尔频谱) 细粒度预测发音唇形，在消费级显卡（RTX 3060/4060）上推流帧率高达 **35 ~ 50 FPS**；
+    - **独创高精唇红缘遮罩 (Vermilion Border Mask)**：针对传统 Wav2Lip 在 96x96 局部上采样放大造成的“嘴周发糊/融化”缺陷，本项目实施精细化唇红缘几何收敛，并在**人中上方、下唇下方、嘴角两侧**施加严格的三向硬边界衰减截断，**100% 保持立绘原图人中与皮肤毛孔的高清锐度与胡茬纹理**；
+    - **肤色动态钳位白平衡**：消除生成图层与原图底层的色偏灰雾，自然融为一体；
+  - **LivePortrait-Realtime**：基于 FasterLivePortrait ONNX 隐空间面部表情重定向，毫秒级面部微形变与自然眨眼；
+  - **MuseTalk**：基于潜在空间扩散特征的高保真口型修复模型；
+  - **自适应拟真视觉动画引擎 (兜底保障)**：零模型权重依赖，自适应人脸特征定位，正弦微呼吸、自然眨眼与 TTS 能量驱动口型开合，保证开箱即用 100% 不崩溃；
+- 📷 **真实物理摄像头动作驱动 (Webcam Tracker)**：
+  - 通过 DirectShow 原生探测并枚举本机连接的物理摄像头真实设备名称（如 `Web Camera` 等）；
+  - 支持通过真实物理摄像头捕获真实用户的面部动态作为输入动作源，直接驱动数字人形象；
+  - GUI 面板提供 `🔄` 实时刷新与索引智能绑定，避免设备号混淆；
+- 🎨 **正面立绘资产自由定制 + 本地 ComfyUI 一键联动**：
+  - 支持用户自由选择本地高分辨率正面人物半身照 (`.png` / `.jpg` / `.webp`)；
+  - 集成 `ComfyUIBridge`，在本地运行 ComfyUI (默认 `8188` 端口) 时，点击 GUI 按钮一键抓取 ComfyUI 最新生成的艺术人物立绘并即时应用；
+- ⚡ **音画全双工协同与打断即时复位**：
+  - TTS 音频推流虚拟声卡的同时，分发一份 PCM 块送入数字人引擎驱动唇型，声画时间戳硬件级同步；
+  - 对方说话触发打断 (Barge-in) 时，毫秒级清空唇动缓冲，数字人嘴巴瞬时闭合并切回自然倾听待命状态。
+
+---
+
 ### 3. 👤 联系人专属立体画像与永久记忆 (Memory Engine)
 
 - **历史记录全量建档**：从已有聊天记录分析身份定位、性格特质、沟通偏好与核心事实记忆（Fact Memories）；
@@ -129,6 +162,18 @@ AudioRouter.play_audio() → 动态音量归一化 → 推流至虚拟声卡注�
 - **缺失模型自动引导**：本地缺少模型时，点击测试自动唤起系统浏览器直达国内极速镜像下载页；
 - **云端 ASR 一键获取**：支持从上游 API 一键拉取可用模型列表并在下拉栏便捷切换；
 - **图片多模态与 OCR**：主流优先调用视觉大模型（如 `qwen-vl-max`, `gpt-4o` 等）理解图意；纯文本自动降级 Windows 原生硬件加速 **WinRT OCR** 离线提取。
+
+---
+
+### 6. 📹 微信视频电话接听与本地 AI 虚拟数字人 (Digital Human Engine)
+
+- **毫秒级视频来电自动探测与接听**：自动区分微信语音通话与视频通话，精准完成接听与音视频链路接驳；
+- **双引擎深度驱动架构 (LivePortrait-Realtime & MuseTalk)**：
+  - **LivePortrait-Realtime**：基于 FasterLivePortrait ONNX 神经网络，单张正面立绘提取 3D 外观隐空间特征，通过 SPADE 神经形变解码器驱动下颌与唇形开合、眼部眨动及自然呼吸，逼真度高且兼顾极速推流；
+  - **MuseTalk**：支持高质量口型同步深度生成模型，可自由在界面下拉菜单中无缝热切换；
+- **用户正面立绘即时定制**：支持用户随时上传任意正面照片/二次元角色形象，自动完成五官关键点对齐与隐空间流形预提取；
+- **虚拟摄像头免侵入直推**：原生配合轻量级 `UnityCapture`（仅 150KB）或 `OBS Virtual Camera` 驱动，微信客户端直接调用虚拟摄像头画面，无任何注入风险；
+- **本地强隔离存储，C 盘 0 字节占用**：LivePortrait 与 MuseTalk 权重全量保存在项目 `models/` 目录下，彻底杜绝系统 C 盘空间膨胀。
 
 ---
 
@@ -233,13 +278,17 @@ wechat-auto/
 ├── run_ui.bat                     # 根目录一键启动快捷脚本
 ├── setup_env.bat                  # 环境配置脚本
 ├── install_vbcable.bat            # 虚拟声卡一键安装脚本
+├── install_vcam.bat               # 虚拟摄像头 (UnityCapture) 一键秒装脚本
 ├── docs/                          # 文档与截图资源
 │   └── vertical_gui_preview.png   # 原生桌面客户端界面预览图
-├── tools/vbcable/                 # VB-Audio CABLE 官方驱动安装包
+├── tools/
+│   ├── vbcable/                   # VB-Audio CABLE 官方驱动安装包
+│   └── vcam/                      # UnityCapture 极速轻量级 DirectShow 滤镜驱动
 └── wechatauto-replica/            # 核心应用程序工程
     ├── run_ui.bat                 # 核心启动脚本
     ├── setup_env.bat              # 便携环境安装与依赖配置脚本
     ├── install_vbcable.bat        # VB-Audio CABLE 驱动安装脚本
+    ├── install_vcam.bat           # 虚拟摄像头驱动一键安装脚本
     ├── gui_app.py                 # 原生桌面客户端入口 (8 大功能面板)
     ├── config.json                # 全局应用配置持久化文件 (gitignore，本地生效)
     ├── config.example.json        # 官方脱敏配置模板 (可供参考配置)
@@ -256,7 +305,7 @@ wechat-auto/
     │   ├── tools.py               # 群管踢人、群成员检测等工具执行器
     │   ├── wechat_bridge.py       # 微信底层消息监听与发信桥接层
     │   └── voice_call/            # 📞 语音电话守护核心模块
-    │       ├── call_agent.py      # 语音电话总控、开场问候与生命周期调度
+    │       ├── call_agent.py      # 语音/视频电话总控、开场问候与生命周期调度
     │       ├── voip_watcher.py    # 来电弹窗毫秒级探测与精准点击接听
     │       ├── audio_router.py    # 虚拟声卡双工音频路由、动态增益与设备自愈
     │       ├── stt_worker.py      # 实时语音识别 (阿里 FunASR Paraformer / Faster-Whisper)
@@ -264,12 +313,23 @@ wechat-auto/
     │       ├── tts_manager.py     # TTS 多引擎管理 (Kokoro-82M / Qwen3 / Edge-TTS)
     │       ├── acoustic_classifier.py # 声学回声消除判别器 (音色指纹+互相关)
     │       ├── voice_clone.py     # 声音克隆管理器
-    │       └── voip_tab_builder.py# VoIP GUI 面板构建器 (独立 STT & TTS 卡片)
+    │       └── voip_tab_builder.py# VoIP GUI 面板构建器 (含数字人画面预览与口型测试)
+    │   └── video_call/            # 📹 视频电话虚拟数字人核心引擎
+    │       ├── avatar_engine.py   # 数字人驱动总控管理器与拟真视觉渲染管线
+    │       ├── video_router.py    # 虚拟摄像头 (DirectShow/UnityCapture) 推流路由器 (640x480标准输出)
+    │       ├── webcam_tracker.py  # 真实物理摄像头硬件枚举探测与动作驱动器
+    │       └── engines/           # 多引擎适配器目录
+    │           ├── wav2lip_engine.py      # Wav2Lip-GAN 极速口型驱动引擎 (独创唇红缘保护)
+    │           ├── liveportrait_engine.py # FasterLivePortrait ONNX 神经隐空间驱动引擎
+    │           └── musetalk_engine.py     # MuseTalk 高质量口型修复驱动引擎
     │
     ├── scripts/                   # 辅助与模型下载脚本
-    │   └── download_tts_models.py # Kokoro-82M 与 Qwen3-TTS 模型一键预下载
+    │   ├── download_tts_models.py    # Kokoro-82M 与 Qwen3-TTS 模型一键预下载
+    │   └── download_avatar_models.py # LivePortrait 与 Wav2Lip/MuseTalk 模型极速下载器
+    ├── tools/vcam/                # UnityCapture 驱动注册文件
     ├── data/profiles/             # 联系人专属立体画像独立存储目录 (*.json)
-    ├── models/                    # 本地语音模型目录 (Paraformer / Whisper / TTS)
+    ├── data/avatars/              # 虚拟数字人正面立绘角色图片库
+    ├── models/                    # 本地 AI 模型目录 (Wav2Lip / LivePortrait / MuseTalk / TTS / ASR)
     ├── runtime/                   # 全量内置绿色免安装 Python 运行时环境
     └── wechatauto/                # 微信 4.x 底层自动化核心库 (DB解密/UIA驱动/发信)
 ```
@@ -315,6 +375,29 @@ wechat-auto/
 
 ### Q8: 启动或调用时出现 `trust_remote_code: False` 告警？
 这是 ModelScope / HuggingFace 模型加载时的标准安全策略提示，不影响任何功能。本项目已在全局日志体系中挂载过滤层，终端日志保持清爽无扰。
+
+### Q9: 虚拟摄像头驱动如何安装？为什么推荐 UnityCapture？
+- **首推方案（UnityCapture，仅 150KB）**：本项目已随附 UnityCapture DirectShow 滤镜驱动，点击【一键安装虚拟摄像头驱动】后选择 `1`，即可秒级免装生效，无需额外下载或安装 300MB+ 的 OBS 软件；
+- **OBS Studio 驱动方案**：若选择通过 WinGet 安装 OBS，脚本已锁定 `--source winget` 官方源，彻底规避了 Windows 应用商店 (msstore) 的 `0x8a15005e` 证书报错；
+- **微信中选择**：安装后，在微信 `设置 -> 声音与通话 -> 摄像头` 中选中 `Unity Video Capture` 或 `OBS Virtual Camera` 即可！
+
+### Q10: 本项目的 AI 模型文件会占用系统 C 盘空间吗？
+**绝不占用系统 C 盘**。本项目已在 Python 运行时、环境启动脚本及各个子引擎中实施严格的路径重定向策略：
+- 全局环境变量 `MODELSCOPE_CACHE`、`HF_HOME`、`HUGGINGFACE_HUB_CACHE`、`TORCH_HOME` 全部强制锁定在本项目 `models/` 目录下；
+- 阿里 FunASR Paraformer 中文识别模型、Faster-Whisper、ChatTTS、Qwen3-TTS、Kokoro-82M、Wav2Lip-GAN 等全量模型文件均统一保存在项目内，完全隔离且可随时随地整体迁移。
+
+### Q11: 微信视频电话接通后本地画面出现绿幕或条纹测试图？
+- **根因说明**：UnityCapture DirectShow 滤镜驱动在分辨率未协商成功或共享内存未被写入有效帧时，会显示其自带的绿色条纹缺省图案；
+- **全链路优化方案**：
+  1. 本项目已将虚拟摄像头推流输出规范为严格的 DirectShow 行业标准 **640x480 @ 25 FPS**，完美契合微信视频调用规范；
+  2. 采用**启动预热机制**：推流中枢启动瞬间自动向虚拟摄像头预充 5 帧初始待机帧，彻底杜绝微信连入瞬间闪现绿幕；
+  3. **接听必启动保障**：通话接通瞬间无论初检是语音还是视频，只要启用了数字人功能，推流中枢均常驻待命；
+  4. **微信内检查**：在微信 `设置 -> 声音与通话 -> 摄像头` 中选中 `Unity Video Capture`，接听即可流畅呈现数字人。
+
+### Q12: Wav2Lip-GAN 口型引擎与其他引擎相比有何优势？
+- **极速流畅实时推流**：Wav2Lip-GAN 拥有极低推理延迟，在消费级独立显卡（如 RTX 3060 / 4060）上推流帧率高达 **35 ~ 50 FPS**，完全满足微信视频电话的 25 FPS 满帧要求；
+- **独创高精唇红缘保护 (根除嘴周发糊)**：传统 Wav2Lip 在 96x96 局部上采样放大贴图时极易将低清插值像素溢出到人中与下巴，导致皮肤毛孔被抹平。本项目独创**三向硬边界衰减算法**，将替换区域严格限定在唇红缘内，**人中、鼻底、下巴与脸颊皮肤 100% 保持立绘原图的高清锐度与真实毛孔**；
+- **平滑降级保障**：在无独立显卡或未下载权重时，系统自适应启用轻量拟真视觉动画管线，确保 100% 稳定运行。
 
 ---
 

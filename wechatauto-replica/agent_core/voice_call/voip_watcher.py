@@ -57,11 +57,34 @@ class VoIPWatcher:
         self.state = VoIPCallState.IDLE
         self.current_caller = ""
         self.current_is_group = False
+        self.current_is_video = False
         self.current_wnd_hwnd = 0
         self.call_start_time = 0.0
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+
+    def _dispatch_incoming_call(self, caller: str, is_group: bool, is_video: bool = False):
+        """安全分发来电事件 (向下兼容接收 2 个或 3 个参数的回调)"""
+        if not self.on_incoming_call:
+            return
+        try:
+            self.on_incoming_call(caller, is_group, is_video)
+        except TypeError:
+            self.on_incoming_call(caller, is_group)
+        except Exception as e:
+            logger.debug(f"[VoIPWatcher] on_incoming_call 回调异常: {e}")
+
+    def _dispatch_call_answered(self, caller: str, is_group: bool, is_video: bool = False):
+        """安全分发接通事件 (向下兼容接收 2 个或 3 个参数的回调)"""
+        if not self.on_call_answered:
+            return
+        try:
+            self.on_call_answered(caller, is_group, is_video)
+        except TypeError:
+            self.on_call_answered(caller, is_group)
+        except Exception as e:
+            logger.debug(f"[VoIPWatcher] on_call_answered 回调异常: {e}")
 
     def start(self):
         """启动来电轮询监听线程"""
@@ -83,17 +106,21 @@ class VoIPWatcher:
     # 白名单匹配与自动接听决策 (用户指令要求核心)
     # -------------------------------------------------------------------------
 
-    def should_answer(self, caller_name: str, is_group: bool) -> Tuple[bool, str]:
+    def should_answer(self, caller_name: str, is_group: bool, is_video: bool = False) -> Tuple[bool, str]:
         """判定该呼叫是否满足自动接听条件
         
         规则：
-        1. 群聊通话：严格受 enable_group_call 控制，默认忽略全部群聊；仅在开启且命中 whitelist_groups 时接听
-        2. 私聊通话：受 sync_reply_targets 控制，自动与当前消息回复对象白名单对齐
+        1. 视频通话：受 video_enabled 控制，未开启时忽略视频呼叫
+        2. 群聊通话：严格受 enable_group_call 控制，默认忽略全部群聊；仅在开启且命中 whitelist_groups 时接听
+        3. 私聊通话：受 sync_reply_targets 控制，自动与当前消息回复对象白名单对齐
         """
         voip_cfg = self.config.voip
 
         if not voip_cfg.enabled:
             return False, "语音通话总开关已关闭"
+
+        if is_video and not getattr(voip_cfg, "video_enabled", True):
+            return False, "视频通话接听未开启 (video_enabled=False)"
 
         # 1. 群聊来电判定
         if is_group:
@@ -425,15 +452,16 @@ class VoIPWatcher:
                     (any(timer_pattern.match(t) for t in all_texts) or any("麦克风" in t for t in all_texts)) and win_h > 250
                 )
                 if is_active_call_panel:
-                    logger.info(f"[VoIPWatcher] 捕获到正在进行中的微信通话窗口 ({class_name})，自动同步通话状态")
+                    is_video_act = any(kw in t for t in all_texts for kw in ["摄像头", "视频"]) or "video" in class_name.lower()
+                    self.current_is_video = is_video_act
+                    logger.info(f"[VoIPWatcher] 捕获到正在进行中的微信通话窗口 ({class_name}, is_video={is_video_act})，自动同步通话状态")
                     self.state = VoIPCallState.IN_PROGRESS
                     self.call_start_time = time.time()
                     self._last_active_detect_time = time.time()
                     self.current_wnd_hwnd = win.NativeWindowHandle
                     if not self.current_caller:
                         self.current_caller = self._get_caller_from_wechat_chat_list() or self._get_caller_from_recent_sessions() or "微信好友"
-                    if self.on_call_answered:
-                        self.on_call_answered(self.current_caller, False)
+                    self._dispatch_call_answered(self.current_caller, False, is_video_act)
                     return
 
                 # 判定条件 1: 微信专属来电振铃悬浮窗类名特征
@@ -459,8 +487,12 @@ class VoIPWatcher:
                 if not is_call_popup:
                     continue
 
-                # 3. 解析来电人与是否群聊
+                # 3. 解析来电人、是否群聊及是否视频通话
                 caller_name, is_group = self._parse_caller_info_from_texts(name, all_texts)
+                is_video = "视频" in name or any("视频" in t for t in all_texts)
+                self.current_is_video = is_video
+                call_type_str = "视频通话" if is_video else "语音通话"
+
                 if not caller_name or self._is_invalid_caller_name(caller_name) or caller_name == "微信好友":
                     top_caller = self._get_caller_from_wechat_chat_list()
                     if top_caller and not self._is_invalid_caller_name(top_caller):
@@ -471,14 +503,11 @@ class VoIPWatcher:
                     if recent_caller:
                         caller_name = recent_caller
 
-                logger.info(f"[VoIPWatcher] 🚨 捕获到微信来电弹窗！类名={class_name}, 坐标=({rect.left},{rect.top},{rect.right},{rect.bottom}), 来电方={caller_name}, 群聊={is_group}")
+                logger.info(f"[VoIPWatcher] 🚨 捕获到微信来电弹窗！[{call_type_str}], 类名={class_name}, 坐标=({rect.left},{rect.top},{rect.right},{rect.bottom}), 来电方={caller_name}, 群聊={is_group}")
 
                 # 触发实时来电回调 (通知 UI 主控制台展示来电事件)
-                if self.state != VoIPCallState.INCOMING and self.on_incoming_call:
-                    try:
-                        self.on_incoming_call(caller_name, is_group)
-                    except Exception as err:
-                        logger.debug(f"[VoIPWatcher] on_incoming_call 异常: {err}")
+                if self.state != VoIPCallState.INCOMING:
+                    self._dispatch_incoming_call(caller_name, is_group, is_video)
 
                 self.state = VoIPCallState.INCOMING
                 self.current_caller = caller_name
@@ -555,7 +584,7 @@ class VoIPWatcher:
                         center_y = (rect.top + rect.bottom) // 2
                     logger.info(f"[VoIPWatcher] 几何推算坐标(接听=右侧86%): ({center_x}, {center_y}) [窗口={win_w}x{win_h}]")
 
-                should, reason = self.should_answer(caller_name, is_group)
+                should, reason = self.should_answer(caller_name, is_group, is_video)
                 logger.info(f"[VoIPWatcher] 自动接听规则判定: should={should}, reason={reason}")
 
                 if should:
@@ -606,9 +635,8 @@ class VoIPWatcher:
                         self.call_start_time = time.time()
                         self._last_active_detect_time = time.time()
                         self.current_wnd_hwnd = _hwnd_for_click
-                        logger.info(f"[VoIPWatcher] ✅ 来电弹窗已消失，确认接通好友 [{caller_name}] 语音通话！")
-                        if self.on_call_answered:
-                            self.on_call_answered(caller_name, is_group)
+                        logger.info(f"[VoIPWatcher] ✅ 来电弹窗已消失，确认接通好友 [{caller_name}] {call_type_str}！")
+                        self._dispatch_call_answered(caller_name, is_group, self.current_is_video)
                     else:
                         # 弹窗未消失，扫射式多点尝试（以 86% 为中心向两侧扫射）
                         logger.warning(f"[VoIPWatcher] ⚠️ 弹窗尚未消失，追加多点扫射点击...")
@@ -631,9 +659,8 @@ class VoIPWatcher:
                             self.call_start_time = time.time()
                             self._last_active_detect_time = time.time()
                             self.current_wnd_hwnd = _hwnd_for_click
-                            logger.info(f"[VoIPWatcher] ✅ 扫射点击后确认接通好友 [{caller_name}] 语音通话！")
-                            if self.on_call_answered:
-                                self.on_call_answered(caller_name, is_group)
+                            logger.info(f"[VoIPWatcher] ✅ 扫射点击后确认接通好友 [{caller_name}] {call_type_str}！")
+                            self._dispatch_call_answered(caller_name, is_group, self.current_is_video)
                         else:
                             logger.error(f"[VoIPWatcher] ❌ 所有点击策略均失败，来电弹窗仍未消失，重置状态等待下次轮询")
                             self.state = VoIPCallState.IDLE

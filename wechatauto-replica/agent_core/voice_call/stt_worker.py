@@ -35,9 +35,13 @@ except Exception:
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
-
-
 PARAFORMER_DIR = os.path.join(MODELS_DIR, "FunASR")
+
+# 强制将 ModelScope 与 HuggingFace 缓存重定向至当前项目 models/ 目录，绝不污染系统 C 盘
+os.environ["MODELSCOPE_CACHE"] = os.path.join(MODELS_DIR, "modelscope")
+os.environ["HF_HOME"] = os.path.join(MODELS_DIR, "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(MODELS_DIR, "huggingface", "hub")
+os.environ["TORCH_HOME"] = os.path.join(MODELS_DIR, "torch")
 
 
 def _resolve_model_path(model_name: str) -> str:
@@ -60,12 +64,12 @@ def _resolve_model_path(model_name: str) -> str:
 
 
 def _resolve_paraformer_path(model_name: str = "paraformer-zh") -> str:
-    """优先从本地 models/ 目录或 ModelScope 缓存定位离线 FunASR Paraformer 模型"""
+    """优先从项目本地 models/ 目录定位离线 FunASR Paraformer 模型，不占用系统 C 盘空间"""
     clean_name = (model_name or "paraformer-zh").strip()
     candidates = [
-        os.path.join(PARAFORMER_DIR, clean_name),
-        os.path.join(MODELS_DIR, clean_name),
         os.path.join(MODELS_DIR, "paraformer-zh"),
+        os.path.join(MODELS_DIR, clean_name),
+        os.path.join(PARAFORMER_DIR, clean_name),
         os.path.join(MODELS_DIR, "paraformer"),
     ]
     for p in candidates:
@@ -77,13 +81,13 @@ def _resolve_paraformer_path(model_name: str = "paraformer-zh") -> str:
             logger.info(f"[STTWorker] 命中本地离线 Paraformer 模型路径: {p}")
             return p
 
-    # 优先检测 ModelScope 缓存目录
+    # 检测本项目内置的 modelscope 缓存目录 (例如 models/modelscope/...)
     try:
-        cache_root = os.path.expanduser("~/.cache/modelscope")
-        if os.path.isdir(cache_root):
-            for root, _, files in os.walk(cache_root):
+        project_ms_dir = os.path.join(MODELS_DIR, "modelscope")
+        if os.path.isdir(project_ms_dir):
+            for root, _, files in os.walk(project_ms_dir):
                 if "paraformer" in root.lower() and ("model.pt" in files or "model.onnx" in files):
-                    logger.info(f"[STTWorker] 命中 ModelScope 缓存 Paraformer 路径: {root}")
+                    logger.info(f"[STTWorker] 命中项目内置 ModelScope 缓存 Paraformer 路径: {root}")
                     return root
     except Exception:
         pass

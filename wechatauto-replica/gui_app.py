@@ -21,6 +21,15 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext, simpledialog
 from typing import Dict, Any, List, Optional
 from PIL import Image, ImageTk, ImageDraw
 
+# 确保所有 AI 库的全局模型与缓存路径始终锁定在本项目 models 目录，杜绝占用系统 C 盘空间
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_MODELS = os.path.join(_PROJECT_ROOT, "models")
+os.makedirs(_PROJECT_MODELS, exist_ok=True)
+os.environ["MODELSCOPE_CACHE"] = os.path.join(_PROJECT_MODELS, "modelscope")
+os.environ["HF_HOME"] = os.path.join(_PROJECT_MODELS, "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(_PROJECT_MODELS, "huggingface", "hub")
+os.environ["TORCH_HOME"] = os.path.join(_PROJECT_MODELS, "torch")
+
 # =========================================================================
 # Cyberpunk Neon Glassmorphism 自绘高质感组件体系 (对齐图 B 视觉标杆)
 # =========================================================================
