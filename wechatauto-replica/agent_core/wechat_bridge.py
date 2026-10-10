@@ -83,6 +83,69 @@ class WeChatBridge:
             except Exception:
                 pass
 
+    def _get_or_create_db(self, force_recreate: bool = False):
+        """统一创建或获取 WeChatDB 实例，支持指定微信号/数据目录"""
+        if self._db is None or force_recreate:
+            from wechatauto.db import WeChatDB
+            acct = getattr(getattr(self.config, "wechat", None), "account", "") or None
+            db_dir = getattr(getattr(self.config, "wechat", None), "db_dir", "") or None
+            self._db = WeChatDB(account=acct, db_dir=db_dir)
+            if hasattr(self.pipeline, "profile_engine"):
+                self.pipeline.profile_engine.set_db(self._db)
+        return self._db
+
+    def get_available_accounts(self) -> List[Dict[str, Any]]:
+        """获取本机所有检测到的微信账号列表"""
+        try:
+            from wechatauto.db import list_accounts
+            db_dir = getattr(getattr(self.config, "wechat", None), "db_dir", "") or None
+            return list_accounts(db_dir)
+        except Exception as e:
+            logger.warning(f"获取微信账号列表失败: {e}")
+            return []
+
+    def switch_account(self, account: str) -> Dict[str, Any]:
+        """切换当前绑定的微信号，重置数据库与监听"""
+        try:
+            if not hasattr(self.config, "wechat"):
+                from agent_core.config import WeChatConfig
+                self.config.wechat = WeChatConfig()
+            self.config.wechat.account = (account or "").strip()
+            self.config.save()
+
+            was_running = self.is_running
+            if was_running:
+                self.stop_listening()
+
+            # 重置内部 DB 与缓存
+            self._db = None
+            self._self_info = None
+            self._cached_status = None
+            self._cached_contacts_groups = None
+
+            # 重新实例化 DB
+            db = self._get_or_create_db(force_recreate=True)
+            info = db.get_self_info()
+            self._self_info = info
+
+            if was_running:
+                self.start_listening()
+
+            self.emit_event("log", {
+                "level": "success",
+                "message": f"微信账号已成功切换至: {db.account} (微信号: {db.wxid})",
+            })
+
+            return {
+                "success": True,
+                "account": db.account,
+                "wxid": db.wxid,
+                "nick_name": info.get("nick_name", ""),
+            }
+        except Exception as e:
+            logger.error(f"切换微信号失败: {e}")
+            return {"success": False, "error": str(e)}
+
     def get_status(self, force_refresh: bool = False) -> Dict[str, Any]:
         """获取微信与机器人运行状态 (带高效缓存，防止频繁读取进程内存导致主界面卡死)"""
         now = time.time()
@@ -103,12 +166,8 @@ class WeChatBridge:
                 self_wxid = self._self_info.get("username", "")
                 self_name = self._self_info.get("nick_name") or self_wxid
             else:
-                from wechatauto.db import WeChatDB
-                if self._db is None:
-                    self._db = WeChatDB()
-                    if hasattr(self.pipeline, "profile_engine"):
-                        self.pipeline.profile_engine.set_db(self._db)
-                info = self._db.get_self_info()
+                db = self._get_or_create_db()
+                info = db.get_self_info() if db else {}
                 if info and info.get("username"):
                     wechat_detected = True
                     self_wxid = info.get("username", "")
@@ -123,6 +182,7 @@ class WeChatBridge:
             "wechat_detected": wechat_detected,
             "self_name": self_name,
             "self_wxid": self_wxid,
+            "bound_account": getattr(getattr(self.config, "wechat", None), "account", "") or (self._db.account if self._db else ""),
         }
         self._cached_status = res
         self._last_status_time = now
@@ -139,9 +199,9 @@ class WeChatBridge:
         groups = []
 
         try:
-            from wechatauto.db import WeChatDB
-            if self._db is None:
-                self._db = WeChatDB()
+            self._get_or_create_db()
+            if not self._db:
+                return {"contacts": [], "groups": []}
 
             # 1. 获取近期会话字典映射 (用于显示未读数与最近一句话)
             session_map = {}
@@ -489,9 +549,9 @@ class WeChatBridge:
         # 3. 私聊好友
         candidates: List[str] = []
         try:
-            if self._db is None:
-                from wechatauto.db import WeChatDB
-                self._db = WeChatDB()
+            self._get_or_create_db()
+            if not self._db:
+                return name, [name, username]
 
             conn = self._db._contact_conn()
             if conn:
@@ -1271,9 +1331,10 @@ class WeChatBridge:
             return True, "消息监听已在运行中"
 
         try:
-            from wechatauto.db import WeChatDB, Listener
-            if self._db is None:
-                self._db = WeChatDB()
+            from wechatauto.db import Listener
+            self._get_or_create_db()
+            if not self._db:
+                return False, "未能创建微信数据库读取器，请确认微信 4.x 已在电脑上运行并登录！"
 
             self._self_info = self._db.get_self_info()
             if not self._self_info or not self._self_info.get("username"):
@@ -1337,9 +1398,9 @@ class WeChatBridge:
         """获取近期各会话的最新消息流（用于界面初始化或手动同步最近收信）"""
         messages = []
         try:
-            if self._db is None:
-                from wechatauto.db import WeChatDB
-                self._db = WeChatDB()
+            self._get_or_create_db()
+            if not self._db:
+                return []
 
             self._self_info = self._db.get_self_info()
             raw_sessions = self._db.get_sessions(limit=limit_sessions)

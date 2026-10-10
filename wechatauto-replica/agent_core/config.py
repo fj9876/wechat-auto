@@ -231,8 +231,15 @@ class VoIPConfig(BaseModel):
     virtual_camera_height: int = Field(default=480, description="虚拟摄像头画面高度 (推荐 DirectShow 兼容 480)")
 
 
+class WeChatConfig(BaseModel):
+    """微信账号与连接配置"""
+    account: str = Field(default="", description="指定的微信账号目录名或微信号，留空则自动检测当前活跃账号")
+    db_dir: str = Field(default="", description="自定义微信数据根目录，留空自动探测")
+
+
 class AppConfig(BaseModel):
     """系统全局配置"""
+    wechat: WeChatConfig = Field(default_factory=WeChatConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     targets: TargetFilterConfig = Field(default_factory=TargetFilterConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)

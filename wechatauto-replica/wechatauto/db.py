@@ -507,7 +507,7 @@ class WeChatDB:
         self.db_dir = db_dir or auto_detect_db_dir()
         if not self.db_dir:
             raise RuntimeError("未找到微信数据库目录，请通过 db_dir 参数手动指定")
-        self.account = account or self._pick_account()
+        self.account = self._resolve_account(account) if account else self._pick_account()
         self.account_dir = os.path.join(self.db_dir, self.account)
         self.workdir = workdir or os.path.join(
             tempfile.gettempdir(), "wechatauto_db", self.account
@@ -522,16 +522,83 @@ class WeChatDB:
     # ------------------------------------------------------------------
     # 账号与数据库文件
     # ------------------------------------------------------------------
+    def _resolve_account(self, account: str) -> str:
+        """解析并对齐传入的账号参数（支持传完整目录名如 wxid_xxx_61f8，或仅微信号前缀 wxid_xxx）"""
+        if not account:
+            return self._pick_account()
+        target = os.path.basename(account.rstrip("/\\"))
+        if os.path.isdir(os.path.join(self.db_dir, target, "db_storage")):
+            return target
+        dirs = _find_account_dirs(self.db_dir)
+        for d in dirs:
+            name = os.path.basename(d)
+            if name == target or name.startswith(target) or re.sub(r"_\w{4}$", "", name) == target:
+                return name
+        return target
+
     def _pick_account(self) -> str:
+        dirs = _find_account_dirs(self.db_dir)
+        if not dirs:
+            raise RuntimeError("未找到任何微信账号目录")
+        if len(dirs) == 1:
+            return os.path.basename(dirs[0])
+
+        # 优先策略 1: 若当前能从微信进程主配置提取 wxid，直接精准匹配对应目录
+        try:
+            auto = self.extract_master_key()
+            if auto and auto[2]:
+                active_wxid = auto[2].strip()
+                for d in dirs:
+                    acct_name = os.path.basename(d)
+                    if acct_name == active_wxid or acct_name.startswith(active_wxid) or re.sub(r"_\w{4}$", "", acct_name) == active_wxid:
+                        wxlog.info(f"按进程主配置成功匹配当前登录账号: {acct_name}")
+                        return acct_name
+        except Exception:
+            pass
+
+        # 优先策略 2: 内存候选密钥打分 —— 哪个账号目录能通过页1 HMAC 解密最多，哪个就是当前登录账号
+        try:
+            cands = self._all_key_candidates()
+            if cands:
+                best_acct, best_ok = None, 0
+                for d in dirs:
+                    acct_name = os.path.basename(d)
+                    base = os.path.join(d, "db_storage")
+                    matched = 0
+                    for root, _, files in os.walk(base):
+                        for f in files:
+                            if f.endswith(".db") and not f.endswith("-wal") and not f.endswith("-shm"):
+                                p = os.path.join(root, f)
+                                try:
+                                    with open(p, "rb") as fp:
+                                        p1 = fp.read(PAGE_SZ)
+                                    if len(p1) >= PAGE_SZ:
+                                        for cand, salt in cands:
+                                            if _verify_enc_key(cand, p1) or (salt and _verify_enc_key(cand, p1, salt=salt)):
+                                                matched += 1
+                                                break
+                                except OSError:
+                                    pass
+                    if matched > best_ok:
+                        best_ok = matched
+                        best_acct = acct_name
+                if best_acct and best_ok > 0:
+                    wxlog.info(f"按内存密钥验证成功锁定当前登录账号: {best_acct} ({best_ok} 个库可用)")
+                    return best_acct
+        except Exception:
+            pass
+
+        # 兜底策略 3: 按最近修改时间（涵盖 .db 与活跃高频更新的 -wal 文件）排序选择
         candidates = []
-        for d in _find_account_dirs(self.db_dir):
-            if os.path.isdir(os.path.join(d, "db_storage")):
+        for d in dirs:
+            base = os.path.join(d, "db_storage")
+            if os.path.isdir(base):
                 recent = max(
                     (
                         os.path.getmtime(os.path.join(root, f))
-                        for root, _, files in os.walk(os.path.join(d, "db_storage"))
+                        for root, _, files in os.walk(base)
                         for f in files
-                        if f.endswith(".db") and not f.endswith("-wal")
+                        if f.endswith(".db") or f.endswith("-wal")
                     ),
                     default=0,
                 )
@@ -897,9 +964,9 @@ class WeChatDB:
 
         与 `_extract_keys_pid` 的区别：这里只负责“找出可能是密钥的 32 字节
         （或 32+16 带显式 salt）”，校验交给调用方对**每个账号目录**分别做。
-        原因：内存里的密钥属于**当前登录账号**，只有对正确的账号目录才能通过
-        页1 HMAC；这样账号选择由密码学校验决定，不再依赖“最近修改 .db”启发式
-        （微信每次更新会重写 .db，mtime 全变 → 启发式会选错账号 → 0 密钥）。
+        包含双路径扫描：
+        1. 结构化 Config.Cipher 对象检索 (std::map 树节点遍历，兼容偏移漂移)；
+        2. WCDB 加密配置 XOR 签名极速全内存扫描 (跨版本通用，覆盖 4.1.2.17 等变种)。
         """
         h = _k32.OpenProcess(0x0010 | 0x0400, False, pid)
         if not h:
@@ -914,36 +981,79 @@ class WeChatDB:
                     return buf.raw[: br.value]
                 return None
 
-            needles = self._find_bytes(h, read, CONFIG_CIPHER_NAME)
-            pairs = [
-                struct.pack("<Q", addr) + struct.pack("<Q", len(CONFIG_CIPHER_NAME))
-                for addr in needles
-            ]
-            for pair in pairs:
-                for qaddr in self._find_bytes(h, read, pair):
-                    node = read(qaddr - 0x10, 0x50)
-                    if not node or len(node) < 0x40:
-                        continue
-                    if struct.unpack_from("<Q", node, 0x10)[0] not in needles:
-                        continue
-                    if struct.unpack_from("<Q", node, 0x18)[0] != len(CONFIG_CIPHER_NAME):
-                        continue
-                    config_ptr = struct.unpack_from("<Q", node, 0x28)[0]
-                    if not (0x10000 <= config_ptr < 0x800000000000):
-                        continue
-                    obj = read(config_ptr + 0x88, 0x28)
-                    if not obj or len(obj) < 0x18:
-                        continue
-                    data_ptr = struct.unpack_from("<Q", obj, 0x8)[0]
-                    data_len = struct.unpack_from("<Q", obj, 0x10)[0]
-                    if not (0 < data_len <= 1024 and 0x10000 <= data_ptr < 0x800000000000):
-                        continue
-                    blob = read(data_ptr, int(data_len))
-                    if not blob or len(blob) != data_len:
+            # 路径 1: 结构化 Config.Cipher 对象检索
+            try:
+                needles = self._find_bytes(h, read, CONFIG_CIPHER_NAME)
+                pairs = [
+                    struct.pack("<Q", addr) + struct.pack("<Q", len(CONFIG_CIPHER_NAME))
+                    for addr in needles
+                ]
+                for pair in pairs:
+                    for qaddr in self._find_bytes(h, read, pair):
+                        # 兼容不同编译版本的 std::_Tree_node 偏移 (0x10 或 0x20)
+                        for node_off in (0x10, 0x20):
+                            node = read(qaddr - node_off, 0x50)
+                            if not node or len(node) < 0x40:
+                                continue
+                            if struct.unpack_from("<Q", node, node_off)[0] not in needles:
+                                continue
+                            if struct.unpack_from("<Q", node, node_off + 0x8)[0] != len(CONFIG_CIPHER_NAME):
+                                continue
+                            config_ptr = struct.unpack_from("<Q", node, node_off + 0x18)[0]
+                            if not (0x10000 <= config_ptr < 0x800000000000):
+                                continue
+                            # 兼容不同版本 Config 对象内部字段偏移
+                            for obj_off in (0x88, 0x80, 0x78, 0x90):
+                                obj = read(config_ptr + obj_off, 0x28)
+                                if not obj or len(obj) < 0x18:
+                                    continue
+                                data_ptr = struct.unpack_from("<Q", obj, 0x8)[0]
+                                data_len = struct.unpack_from("<Q", obj, 0x10)[0]
+                                if not (0 < data_len <= 1024 and 0x10000 <= data_ptr < 0x800000000000):
+                                    continue
+                                blob = read(data_ptr, int(data_len))
+                                if not blob or len(blob) != data_len:
+                                    continue
+                                decoded = bytes(
+                                    v ^ CONFIG_XOR_MASK[i % len(CONFIG_XOR_MASK)]
+                                    for i, v in enumerate(blob)
+                                )
+                                for m in HEX_LITERAL_RE.finditer(decoded):
+                                    run = m.group(1).decode().lower()
+                                    starts = [0]
+                                    if len(run) > 96:
+                                        starts += list(range(0, len(run) - 63, 32))
+                                        starts.append(len(run) - 64)
+                                    for s in dict.fromkeys(starts):
+                                        if s + 64 > len(run):
+                                            continue
+                                        try:
+                                            cand = bytes.fromhex(run[s:s + 64])
+                                        except ValueError:
+                                            continue
+                                        if cand in seen or not self._probable_key(cand):
+                                            continue
+                                        seen.add(cand)
+                                        out.add((cand, None))
+                                        if s + 96 <= len(run):
+                                            try:
+                                                out.add((cand, bytes.fromhex(run[s + 64: s + 96])))
+                                            except ValueError:
+                                                pass
+            except Exception as e:
+                wxlog.debug(f"Structured Config.Cipher scan on PID {pid} exception: {e!r}")
+
+            # 路径 2: WCDB 加密配置 XOR 签名快速全内存扫描 (跨版本通用，覆盖 4.1.2.17 等变种)
+            # b"x'" 经 CONFIG_XOR_MASK[:2] 异或后特征固定为 bytes([0xaa, 0xe0])
+            try:
+                sig_hits = self._find_bytes(h, read, bytes([0xaa, 0xe0]))
+                for sig_addr in sig_hits:
+                    raw = read(sig_addr, 128)
+                    if not raw:
                         continue
                     decoded = bytes(
                         v ^ CONFIG_XOR_MASK[i % len(CONFIG_XOR_MASK)]
-                        for i, v in enumerate(blob)
+                        for i, v in enumerate(raw)
                     )
                     for m in HEX_LITERAL_RE.finditer(decoded):
                         run = m.group(1).decode().lower()
@@ -954,13 +1064,21 @@ class WeChatDB:
                         for s in dict.fromkeys(starts):
                             if s + 64 > len(run):
                                 continue
-                            cand = bytes.fromhex(run[s:s + 64])
+                            try:
+                                cand = bytes.fromhex(run[s:s + 64])
+                            except ValueError:
+                                continue
                             if cand in seen or not self._probable_key(cand):
                                 continue
                             seen.add(cand)
                             out.add((cand, None))
                             if s + 96 <= len(run):
-                                out.add((cand, bytes.fromhex(run[s + 64: s + 96])))
+                                try:
+                                    out.add((cand, bytes.fromhex(run[s + 64: s + 96])))
+                                except ValueError:
+                                    pass
+            except Exception as e:
+                wxlog.debug(f"Direct XOR candidate scan on PID {pid} exception: {e!r}")
         finally:
             _k32.CloseHandle(h)
         return out
@@ -1085,84 +1203,8 @@ class WeChatDB:
         return pids
 
     def _extract_keys_pid(self, pid: int, tested: set) -> Dict[str, bytes]:
-        h = _k32.OpenProcess(0x0010 | 0x0400, False, pid)
-        if not h:
-            return {}
-        try:
-            def read(addr: int, n: int):
-                buf = ctypes.create_string_buffer(n)
-                br = ctypes.c_size_t(0)
-                if _k32.ReadProcessMemory(h, ctypes.c_void_p(addr), buf, n, ctypes.byref(br)) and br.value:
-                    return buf.raw[: br.value]
-                return None
-
-            needles = self._find_bytes(h, read, CONFIG_CIPHER_NAME)
-            pairs = [
-                struct.pack("<Q", addr) + struct.pack("<Q", len(CONFIG_CIPHER_NAME))
-                for addr in needles
-            ]
-            keys: Dict[str, bytes] = {}
-            for pair in pairs:
-                for qaddr in self._find_bytes(h, read, pair):
-                    node = read(qaddr - 0x10, 0x50)
-                    if not node or len(node) < 0x40:
-                        continue
-                    if struct.unpack_from("<Q", node, 0x10)[0] not in needles:
-                        continue
-                    if struct.unpack_from("<Q", node, 0x18)[0] != len(CONFIG_CIPHER_NAME):
-                        continue
-                    config_ptr = struct.unpack_from("<Q", node, 0x28)[0]
-                    if not (0x10000 <= config_ptr < 0x800000000000):
-                        continue
-                    obj = read(config_ptr + 0x88, 0x28)
-                    if not obj or len(obj) < 0x18:
-                        continue
-                    data_ptr = struct.unpack_from("<Q", obj, 0x8)[0]
-                    data_len = struct.unpack_from("<Q", obj, 0x10)[0]
-                    if not (0 < data_len <= 1024 and 0x10000 <= data_ptr < 0x800000000000):
-                        continue
-                    blob = read(data_ptr, int(data_len))
-                    if not blob or len(blob) != data_len:
-                        continue
-                    decoded = bytes(
-                        v ^ CONFIG_XOR_MASK[i % len(CONFIG_XOR_MASK)]
-                        for i, v in enumerate(blob)
-                    )
-                    for m in HEX_LITERAL_RE.finditer(decoded):
-                        run = m.group(1).decode().lower()
-                        starts = [0]
-                        if len(run) > 96:
-                            starts += list(range(0, len(run) - 63, 32))
-                            starts.append(len(run) - 64)
-                        for s in dict.fromkeys(starts):
-                            if s + 64 > len(run):
-                                continue
-                            cand = bytes.fromhex(run[s:s + 64])
-                            if cand in tested or not self._probable_key(cand):
-                                continue
-                            tested.add(cand)
-                            # 96hex 形式：后 32 hex 是显式 salt（Raw Key with
-                            # Explicit Salt），与文件头 salt 都要尝试
-                            explicit = None
-                            if s + 96 <= len(run):
-                                explicit = bytes.fromhex(run[s + 64: s + 96])
-                            salt_choices = [None]
-                            if explicit:
-                                salt_choices.append(explicit)
-                            for salt_opt in salt_choices:
-                                for rel, path, _ in self._db_files:
-                                    if rel in keys:
-                                        continue
-                                    with open(path, "rb") as f:
-                                        page1 = f.read(PAGE_SZ)
-                                    if _verify_enc_key(cand, page1, salt=salt_opt):
-                                        # 显式 salt 通过 → 存 key+salt（明文头模式）；
-                                        # 文件头 salt 通过 → 存裸 key
-                                        keys[rel] = cand + (salt_opt or b"")
-                                        break
-        finally:
-            _k32.CloseHandle(h)
-        return keys
+        cands = self._collect_key_candidates(pid, tested)
+        return self._keys_from_candidates(cands)
 
     @staticmethod
     def _probable_key(b: bytes) -> bool:
@@ -2811,33 +2853,110 @@ class WeChatDB:
 
 
 def list_accounts(db_dir: Optional[str] = None) -> List[dict]:
-    """扫描数据目录下的所有微信账号目录。
+    """扫描数据目录下的所有微信账号目录，返回完整状态与详情。
 
-    返回: [{"account": "wxid_xxx_abcd", "wxid": "wxid_xxx",
-            "path": ..., "last_activity": mtime, "self_nick": 昵称或空}]
+    返回: [
+        {
+            "account": "wxid_xxx_abcd",
+            "wxid": "wxid_xxx",
+            "path": ...,
+            "db_count": 21,
+            "last_activity": mtime,
+            "is_active": True/False,
+            "self_nick": "昵称或微信号"
+        },
+        ...
+    ]
     """
     db_dir = db_dir or auto_detect_db_dir()
     if not db_dir:
         return []
-    out = []
-    for d in _find_account_dirs(db_dir):
-        recent = max(
-            (
-                os.path.getmtime(os.path.join(root, f))
-                for root, _, files in os.walk(os.path.join(d, "db_storage"))
-                for f in files
-                if f.endswith(".db") and not f.endswith("-wal")
-            ),
-            default=0,
+    dirs = _find_account_dirs(db_dir)
+    if not dirs:
+        return []
+
+    # 探测当前运行中微信的活跃微信号
+    active_wxid = None
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, encoding="gbk", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        pids = []
+        for line in (r.stdout or "").strip().splitlines():
+            parts = line.strip('"').split('","')
+            if len(parts) >= 2 and parts[1].isdigit():
+                pids.append(int(parts[1]))
+        for pid in pids:
+            got = extract_master_key_from_cfg(pid)
+            if got and got[2]:
+                active_wxid = got[2].strip()
+                break
+    except Exception:
+        pass
+
+    out = []
+    for d in dirs:
         account = os.path.basename(d)
+        wxid = re.sub(r"_\w{4}$", "", account)
+        base = os.path.join(d, "db_storage")
+        db_count = 0
+        recent = 0.0
+        for root, _, files in os.walk(base):
+            for f in files:
+                p = os.path.join(root, f)
+                try:
+                    mt = os.path.getmtime(p)
+                    if mt > recent:
+                        recent = mt
+                except OSError:
+                    pass
+                if f.endswith(".db") and not f.endswith("-wal") and not f.endswith("-shm"):
+                    db_count += 1
+
+        is_act = False
+        if active_wxid and (account == active_wxid or account.startswith(active_wxid) or wxid == active_wxid):
+            is_act = True
+
+        # 读取昵称 (若缓存 keys.json 存在)
+        self_nick = ""
+        kf = os.path.join(tempfile.gettempdir(), "wechatauto_db", account, "keys.json")
+        if os.path.exists(kf):
+            try:
+                with open(kf, "r", encoding="utf-8") as fp:
+                    k_map = json.load(fp)
+                c_key_hex = k_map.get("contact\\contact.db") or k_map.get("contact/contact.db")
+                if c_key_hex:
+                    c_path = os.path.join(base, "contact", "contact.db")
+                    if os.path.exists(c_path):
+                        with open(c_path, "rb") as c_fp:
+                            p1 = c_fp.read(PAGE_SZ)
+                        c_key = bytes.fromhex(c_key_hex)
+                        if _verify_enc_key(c_key, p1):
+                            # 若没有显式 active_wxid，能验证成功且最近活跃的也可视为在线候选
+                            is_act = is_act or (time.time() - recent < 300.0)
+            except Exception:
+                pass
+
         out.append({
             "account": account,
-            "wxid": re.sub(r"_\w{4}$", "", account),
+            "wxid": wxid,
             "path": d,
+            "db_count": db_count,
             "last_activity": recent,
+            "is_active": is_act,
+            "self_nick": self_nick or wxid,
         })
-    out.sort(key=lambda x: -x["last_activity"])
+
+    # 如果未能从 master key 判定 is_active，但有账号在最近5分钟有修改且修改时间最新，标记为 is_active
+    if not any(x["is_active"] for x in out) and out:
+        out.sort(key=lambda x: -x["last_activity"])
+        if time.time() - out[0]["last_activity"] < 3600.0:
+            out[0]["is_active"] = True
+
+    out.sort(key=lambda x: (not x["is_active"], -x["last_activity"]))
     return out
 
 

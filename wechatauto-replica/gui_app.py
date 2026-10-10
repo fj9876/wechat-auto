@@ -361,6 +361,7 @@ class WeChatAIAgentApp:
         self.all_groups: List[Dict[str, Any]] = []
         self.selected_users: set[str] = set(self.config.targets.whitelist_users)
         self.selected_groups: set[str] = set(self.config.targets.whitelist_groups)
+        self._account_items_map: Dict[str, str] = {}
 
         # 样式与主题设置
         self._setup_styles()
@@ -604,6 +605,50 @@ class WeChatAIAgentApp:
             fg=self.COLOR_MUTED
         )
         self.lbl_wechat_status.pack(anchor="w")
+
+        # 中间微信多账号切换与配置区
+        mid_box = tk.Frame(header_frame, bg=self.COLOR_HEADER)
+        mid_box.pack(side="left", padx=(15, 10), pady=12)
+
+        f_acct = tk.Frame(mid_box, bg=self.COLOR_HEADER)
+        f_acct.pack(anchor="w")
+
+        tk.Label(
+            f_acct,
+            text="👤 绑定微信号:",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.COLOR_HEADER,
+            fg="#475569"
+        ).pack(side="left", padx=(0, 4))
+
+        self.var_selected_account = tk.StringVar(value="")
+        self.cb_account_select = ttk.Combobox(
+            f_acct,
+            textvariable=self.var_selected_account,
+            state="readonly",
+            width=28,
+            font=("Microsoft YaHei UI", 9)
+        )
+        self.cb_account_select.pack(side="left", padx=2)
+        self.cb_account_select.bind("<<ComboboxSelected>>", self._on_account_combobox_selected)
+
+        btn_account_manage = tk.Button(
+            f_acct,
+            text="👥 账号管理",
+            command=self._on_manage_accounts_click,
+            bg="#EEF2FF",
+            fg="#4F46E5",
+            activebackground="#E0E7FF",
+            activeforeground="#4338CA",
+            bd=1,
+            relief="solid",
+            highlightbackground="#C7D2FE",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2",
+            padx=8,
+            pady=2
+        )
+        btn_account_manage.pack(side="left", padx=(4, 0))
 
         # 右侧操作区 (配置导出导入、主控制开关与刷新)
         right_box = tk.Frame(header_frame, bg=self.COLOR_HEADER)
@@ -5275,6 +5320,10 @@ class WeChatAIAgentApp:
             if hasattr(vb, "_update_stt_status_ui"): vb._update_stt_status_ui()
             if hasattr(vb, "_update_tts_status_ui"): vb._update_tts_status_ui()
 
+        # 10. 刷新微信号绑定状态
+        if hasattr(self, "_update_account_combobox_items"):
+            self._update_account_combobox_items()
+
     # -------------------------------------------------------------------------
     # 状态刷新与启停事件
     # -------------------------------------------------------------------------
@@ -5337,6 +5386,268 @@ class WeChatAIAgentApp:
         else:
             messagebox.showerror("启动失败", msg)
 
+    def _update_account_combobox_items(self):
+        """刷新头部微信号选择下拉框"""
+        try:
+            accounts = self.bridge.get_available_accounts()
+            configured_acct = getattr(getattr(self.config, "wechat", None), "account", "") or ""
+            current_bound = configured_acct
+            if not current_bound and hasattr(self.bridge, "_db") and self.bridge._db:
+                current_bound = getattr(self.bridge._db, "account", "")
+
+            items = []
+            self._account_items_map = {}
+
+            # 默认项：自动识别
+            auto_label = "✨ 自动智能识别当前登录微信号"
+            items.append(auto_label)
+            self._account_items_map[auto_label] = ""
+
+            selected_idx = 0
+            for acct_info in accounts:
+                acct_name = acct_info.get("account", "")
+                wxid = acct_info.get("wxid", "")
+                nick = acct_info.get("self_nick", "") or wxid
+                dbs = acct_info.get("db_count", 0)
+                is_active = acct_info.get("is_active", False)
+
+                tag = "🟢[在线]" if is_active else "⚪[历史]"
+                display_label = f"{tag} {nick} ({acct_name}) - {dbs}库"
+                items.append(display_label)
+                self._account_items_map[display_label] = acct_name
+
+                if configured_acct and configured_acct == acct_name:
+                    selected_idx = len(items) - 1
+
+            self.cb_account_select["values"] = items
+            if items:
+                if selected_idx < len(items):
+                    self.cb_account_select.current(selected_idx)
+                else:
+                    self.cb_account_select.current(0)
+        except Exception as e:
+            print(f"[UI] 刷新微信号下拉框失败: {e}")
+
+    def _on_account_combobox_selected(self, event=None):
+        """用户在头部下拉框中切换微信号"""
+        try:
+            val = self.var_selected_account.get()
+            target_acct = self._account_items_map.get(val, "")
+            curr_cfg_acct = getattr(getattr(self.config, "wechat", None), "account", "")
+
+            if target_acct == curr_cfg_acct:
+                return
+
+            if not hasattr(self.config, "wechat"):
+                from agent_core.config import WeChatConfig
+                self.config.wechat = WeChatConfig()
+
+            self.config.wechat.account = target_acct
+            self.config.save()
+
+            if not target_acct:
+                self._append_log("info", "系统", "微信号绑定已切换为【自动智能识别当前登录微信号】，正在重新连接...")
+            else:
+                self._append_log("info", "系统", f"正在切换绑定微信账号为: {target_acct}...")
+
+            def _async_switch():
+                res = self.bridge.switch_account(target_acct)
+                if res.get("success"):
+                    self.dispatch_ui(
+                        self._append_log, "success", "系统",
+                        f"微信号成功切换至: {res.get('account')} ({res.get('wxid')})"
+                    )
+                else:
+                    self.dispatch_ui(
+                        self._append_log, "warning", "系统",
+                        f"切换微信号提示: {res.get('error', '未知错误')}"
+                    )
+                self._async_initial_load()
+
+            threading.Thread(target=_async_switch, daemon=True).start()
+        except Exception as e:
+            messagebox.showerror("切换账号失败", f"切换账号时发生异常: {e}")
+
+    def _on_manage_accounts_click(self):
+        """弹出微信多账号管理与绑定切换窗口"""
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("微信多账号管理与绑定切换")
+            dlg.geometry("740x480")
+            dlg.minsize(700, 420)
+            dlg.configure(bg=self.COLOR_BG)
+            dlg.transient(self.root)
+            dlg.grab_set()
+
+            # 标题说明栏
+            f_top = tk.Frame(dlg, bg=self.COLOR_BG, padx=16, pady=12)
+            f_top.pack(fill="x")
+            tk.Label(
+                f_top,
+                text="👥 微信账号识别与多账号管理",
+                font=("Microsoft YaHei UI", 12, "bold"),
+                bg=self.COLOR_BG,
+                fg="#1E293B"
+            ).pack(anchor="w")
+            tk.Label(
+                f_top,
+                text="系统支持自动识别当前电脑登录的活跃微信。当电脑存在多个微信历史数据或同时运行多个微信时，可在此显式指定绑定账号。",
+                font=("Microsoft YaHei UI", 9),
+                bg=self.COLOR_BG,
+                fg="#64748B"
+            ).pack(anchor="w", pady=(2, 0))
+
+            # 表格区域
+            f_table = tk.Frame(dlg, bg=self.COLOR_BG, padx=16)
+            f_table.pack(fill="both", expand=True)
+
+            cols = ("status", "account", "wxid", "dbs", "last_active")
+            tree = ttk.Treeview(f_table, columns=cols, show="headings", height=8, selectmode="browse")
+            tree.heading("status", text="状态")
+            tree.heading("account", text="账号目录标识")
+            tree.heading("wxid", text="微信号/昵称")
+            tree.heading("dbs", text="数据库数")
+            tree.heading("last_active", text="最近活跃时间")
+
+            tree.column("status", width=95, anchor="center")
+            tree.column("account", width=200, anchor="w")
+            tree.column("wxid", width=160, anchor="w")
+            tree.column("dbs", width=70, anchor="center")
+            tree.column("last_active", width=140, anchor="center")
+
+            sb = ttk.Scrollbar(f_table, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=sb.set)
+            tree.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+
+            def refresh_table():
+                for row in tree.get_children():
+                    tree.delete(row)
+                accounts = self.bridge.get_available_accounts()
+                configured_acct = getattr(getattr(self.config, "wechat", None), "account", "") or ""
+                bound_acct = configured_acct or (self.bridge._db.account if getattr(self.bridge, "_db", None) else "")
+
+                for acct in accounts:
+                    acct_name = acct.get("account", "")
+                    wxid = acct.get("wxid", "")
+                    nick = acct.get("self_nick", "") or wxid
+                    dbs = acct.get("db_count", 0)
+                    is_active = acct.get("is_active", False)
+                    last_time = ""
+                    if acct.get("last_activity"):
+                        last_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(acct["last_activity"]))
+
+                    status_str = "⚪ 离线"
+                    if acct_name == bound_acct:
+                        status_str = "⭐ 当前绑定"
+                    elif is_active:
+                        status_str = "🟢 在线"
+
+                    tree.insert("", "end", iid=acct_name, values=(
+                        status_str, acct_name, nick, f"{dbs} 个", last_time
+                    ))
+
+            refresh_table()
+
+            # 底部操作栏
+            f_bottom = tk.Frame(dlg, bg=self.COLOR_BG, padx=16, pady=12)
+            f_bottom.pack(fill="x")
+
+            def do_bind_selected():
+                sel = tree.selection()
+                if not sel:
+                    messagebox.showwarning("提示", "请先在列表中选中要绑定的微信账号", parent=dlg)
+                    return
+                target_acct = sel[0]
+                if not hasattr(self.config, "wechat"):
+                    from agent_core.config import WeChatConfig
+                    self.config.wechat = WeChatConfig()
+                self.config.wechat.account = target_acct
+                self.config.save()
+                dlg.destroy()
+                self._update_account_combobox_items()
+                self._append_log("info", "系统", f"已绑定微信账号: {target_acct}，正在重新加载...")
+                threading.Thread(target=self._async_initial_load, daemon=True).start()
+
+            def do_set_auto():
+                if not hasattr(self.config, "wechat"):
+                    from agent_core.config import WeChatConfig
+                    self.config.wechat = WeChatConfig()
+                self.config.wechat.account = ""
+                self.config.save()
+                dlg.destroy()
+                self._update_account_combobox_items()
+                self._append_log("info", "系统", "已设置为【自动智能识别当前登录账号】，正在重新加载...")
+                threading.Thread(target=self._async_initial_load, daemon=True).start()
+
+            btn_bind = tk.Button(
+                f_bottom,
+                text="📌 绑定选中的账号",
+                command=do_bind_selected,
+                bg="#4F46E5",
+                fg="#FFFFFF",
+                activebackground="#4338CA",
+                activeforeground="#FFFFFF",
+                bd=0,
+                font=("Microsoft YaHei UI", 9, "bold"),
+                cursor="hand2",
+                padx=12,
+                pady=6
+            )
+            btn_bind.pack(side="left", padx=(0, 8))
+
+            btn_auto = tk.Button(
+                f_bottom,
+                text="✨ 设为自动识别",
+                command=do_set_auto,
+                bg="#EEF2FF",
+                fg="#4F46E5",
+                activebackground="#E0E7FF",
+                activeforeground="#4338CA",
+                bd=1,
+                relief="solid",
+                font=("Microsoft YaHei UI", 9),
+                cursor="hand2",
+                padx=10,
+                pady=5
+            )
+            btn_auto.pack(side="left", padx=4)
+
+            btn_refresh = tk.Button(
+                f_bottom,
+                text="🔄 刷新列表",
+                command=refresh_table,
+                bg="#F8FAFC",
+                fg="#475569",
+                activebackground="#F1F5F9",
+                bd=1,
+                relief="solid",
+                font=("Microsoft YaHei UI", 9),
+                cursor="hand2",
+                padx=10,
+                pady=5
+            )
+            btn_refresh.pack(side="left", padx=4)
+
+            btn_close = tk.Button(
+                f_bottom,
+                text="关闭",
+                command=dlg.destroy,
+                bg="#F8FAFC",
+                fg="#475569",
+                activebackground="#F1F5F9",
+                bd=1,
+                relief="solid",
+                font=("Microsoft YaHei UI", 9),
+                cursor="hand2",
+                padx=14,
+                pady=5
+            )
+            btn_close.pack(side="right")
+
+        except Exception as e:
+            messagebox.showerror("打开账号管理失败", f"打开账号管理窗口异常: {e}")
+
     def _async_initial_load(self):
         """后台异步载入微信状态、启动消息监听并同步近期消息流与通讯录"""
         if getattr(self, "_is_initial_loading", False):
@@ -5350,6 +5661,8 @@ class WeChatAIAgentApp:
             self_wxid = status.get("self_wxid", "")
 
             def update_status():
+                if hasattr(self, "_update_account_combobox_items"):
+                    self._update_account_combobox_items()
                 if wechat_detected:
                     display_name = self_name.strip() if self_name and self_name.strip() else self_wxid
                     title_text = f"● 微信已连接: {display_name} ({self_wxid})" if display_name != self_wxid else f"● 微信已连接: {self_wxid}"

@@ -219,8 +219,14 @@ try:
             print("extract_master_key: OK (cfg_dword=%s, wxid=%s)" % (got[1], got[2]))
         else:
             print("extract_master_key: FAILED（微信未运行 / 权限不足 / 版本改动）")
-    print("主密钥: %s" % ("已取得（不打印内容）" if master else "无"))
-    print("各账号目录密钥可用性（缓存 / 主密钥现派生）:")
+    cands = set()
+    try:
+        cands = db._all_key_candidates()
+        print("内存候选密钥材料收集:", len(cands), "项")
+    except Exception as e:
+        print("内存候选收集失败:", repr(e))
+
+    print("各账号目录密钥可用性（缓存 / 主密钥派生 / 内存候选匹配）:")
     for d in _find_account_dirs(db.db_dir):
         acct = os.path.basename(d)
         saved = (db.account, db.account_dir, db._db_files, db._keys,
@@ -246,9 +252,13 @@ try:
             if master:
                 db._keys = db.derive_keys_from_master(master)
                 ok_derived = sum(1 for rel, _, _ in db._db_files if db._key_works(rel))
-            print("   %-34s 库数 %2d  缓存可用 %2d  主密钥派生 %2d %s"
-                  % (acct, len(db._db_files), ok_cache, ok_derived,
-                     "<== 属于此账号" if (ok_cache or ok_derived) else ""))
+            ok_cands = 0
+            if cands:
+                cand_keys = db._keys_from_candidates(cands)
+                ok_cands = len(cand_keys)
+            match_mark = "<== 属于此账号" if (ok_cache or ok_derived or ok_cands) else ""
+            print("   %-34s 库数 %2d  缓存可用 %2d  主密钥派生 %2d  内存候选匹配 %2d %s"
+                  % (acct, len(db._db_files), ok_cache, ok_derived, ok_cands, match_mark))
         finally:
             (db.account, db.account_dir, db._db_files, db._keys,
              db.workdir, db.keys_file) = saved
