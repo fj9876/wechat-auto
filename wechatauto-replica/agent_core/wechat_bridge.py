@@ -726,13 +726,15 @@ class WeChatBridge:
             raw_type = str(msg_row.get("type", "文本"))
             local_id = msg_row.get("local_id")
 
+            msg_shard = msg_row.get("shard")
+
             # A. 语音消息自动下载与转文字
             if (raw_type == "语音" or msg_row.get("local_type") == 34) and local_id and self.config.voice.enabled:
                 try:
                     from wechatauto.media import MediaDownloader
                     if self._db is not None:
                         md = MediaDownloader(self._db)
-                        detected_voice_path = md.download_voice(username, int(local_id))
+                        detected_voice_path = md.download_voice(username, int(local_id), shard=msg_shard)
                 except Exception as e:
                     self.emit_event("log", {"level": "warning", "message": f"⚠️ 提取语音媒体失败: {e}"})
 
@@ -750,13 +752,13 @@ class WeChatBridge:
                             "message": f"⚠️ [语音转写未检测到文字] {text_trans}"
                         })
 
-            # B. 图片消息自动解密落地
+            # B. 图片消息自动解密落地 (支持 _h.dat 高清真原图多档回退与跨分片精确定位)
             if (raw_type == "图片" or msg_row.get("local_type") == 3) and local_id and self.config.image.enabled:
                 try:
                     from wechatauto.media import MediaDownloader
                     if self._db is not None:
                         md = MediaDownloader(self._db)
-                        detected_image_path = md.download_image(username, int(local_id))
+                        detected_image_path = md.download_image(username, int(local_id), shard=msg_shard)
                 except Exception as e:
                     self.emit_event("log", {"level": "warning", "message": f"⚠️ 解密图片媒体失败: {e}"})
 

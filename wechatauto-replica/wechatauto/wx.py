@@ -139,11 +139,59 @@ class _DBMessageParent:
 
 
 class _AllMessageChat:
-    """AddListenAll 使用的轻量 Chat 占位（仅含 .who，不触发 GUI 初始化）。"""
+    """``AddListenAll`` 回调里拿到的会话对象。
 
-    def __init__(self, username: str):
+    构造时**不碰 GUI**（每条消息都 new 一个 Chat 会触发 ``WeChatGUI`` 初始化），
+    只带 username 和解析好的昵称。想在回调里直接回话时，用 ``factory`` 按需升级
+    成真正的 :class:`Chat` 并缓存下来，``SendMsg`` 原样转发过去。
+    """
+
+    def __init__(self, username: str, nickname: str = '', factory=None, db=None):
         self.who = username
         self._wxid = username
+        self._nickname = nickname or ''
+        self._factory = factory
+        self._chat = None
+        self._db = db          # 只读库用（查群成员），不需要 GUI
+
+    @property
+    def nickname(self) -> str:
+        return self._nickname or self.who
+
+    def __str__(self):
+        return self.nickname
+
+    def __repr__(self):
+        return f'<{PROJECT_NAME} - _AllMessageChat("{self.who}")>'
+
+    def GetGroupMembers(self) -> List[dict]:
+        """群成员列表（与 :meth:`Chat.GetGroupMembers` 同义，只读库、不建 GUI）。
+
+        全局监听回调里拿到的就是本类实例，所以这里也要能查名字。
+        """
+        wxid = self._wxid or ''
+        if not wxid.endswith('@chatroom') or self._db is None:
+            return []
+        try:
+            return self._db.get_group_members(wxid)
+        except Exception:
+            return []
+
+    @property
+    def chat(self):
+        if self._chat is None and self._factory is not None:
+            try:
+                self._chat = self._factory(self.who)
+            except Exception as e:
+                wxlog.debug(f'全局监听会话升级为 Chat 失败：{e}')
+        return self._chat
+
+    def SendMsg(self, msg: str, **kw):
+        chat = self.chat
+        if chat is None:
+            from wechatauto.exceptions import WechatautoError
+            raise WechatautoError('全局监听回调里无法回复：未能构造 Chat')
+        return chat.SendMsg(msg, **kw)
 
 
 def _extract_group_sender(content) -> str:
@@ -189,11 +237,20 @@ def _pick_msg_class(is_self: bool, mtype: Optional[str], content: str):
     return get('SelfOtherMessage' if is_self else 'FriendOtherMessage')
 
 
-def _db_row_to_message(row: dict, chat: 'Chat', self_wxid: str = None) -> 'Message':
+def _db_row_to_message(row: dict, chat: 'Chat', self_wxid: str = None,
+                       db=None) -> 'Message':
     """把 db.py 的消息行转换为现有 Message 子类实例。
 
     direction 判定：``sender_id == 2`` 视为自己（与 guia 发送校验一致），
     也可用 self_wxid 比对兜底。
+
+    发送者身份：``real_sender_id`` 是 ``message_resource.db`` 里 ``SenderName2Id``
+    的 rowid，db 层已经把它换成真 wxid 放在 ``sender_username``，但老代码既没往下传，
+    ``msg.wxid`` 存的又还是那个数字，于是调用方只能靠文本消息正文里的 ``wxid_xxx:\\n``
+    前缀刮发送者——图片/语音/文件这些类型没有前缀，就彻底拿不到是谁发的。现在：
+    ``msg.sender_wxid`` 给真实 wxid（解析不到时退回正文前缀，再退回那个数字，
+    保持老代码能读到的值不变），``msg.sender`` 给备注/昵称（非文本消息也能对上人了），
+    ``msg.wxid`` 对自己的消息给 ``self_wxid`` 而不是常量 2。
     """
     from wechatauto.db import WeChatDB
     from wechatauto.msgs.mattr import SystemMessage
@@ -220,11 +277,25 @@ def _db_row_to_message(row: dict, chat: 'Chat', self_wxid: str = None) -> 'Messa
     msg.local_id = row.get('local_id')
     msg.sort_seq = row.get('sort_seq')
     msg.create_time = row.get('create_time')
-    msg.wxid = sender_id
     msg.attr = 'self' if is_self else 'friend'
-    sender = _extract_group_sender(content) or getattr(chat, 'who', '')
-    msg.sender = sender or getattr(chat, 'who', '')
-    msg.sender_remark = msg.sender
+
+    sender_wxid = str(row.get('sender_username') or '').strip()
+    if sender_wxid.isdigit():
+        sender_wxid = ''          # 1.2.4 之前兜底遗留：把数字 rowid 冒充成了用户名
+    if not sender_wxid:
+        sender_wxid = _extract_group_sender(content)   # 正文前缀仍然更准的场景
+
+    msg.sender_wxid = sender_wxid
+    msg.wxid = sender_wxid or (self_wxid if is_self else sender_id)
+    db = db if db is not None else getattr(chat, '_db', None)
+    disp = ''
+    if sender_wxid and db is not None:
+        try:
+            disp = db.nickname_map().get(sender_wxid, '')
+        except Exception:
+            disp = ''
+    msg.sender = disp or sender_wxid or getattr(chat, 'who', '')
+    msg.sender_remark = disp or msg.sender
     return msg
 
 
@@ -254,6 +325,23 @@ def _resolve_wxid(db, name: str) -> str:
     except Exception:
         pass
     return name
+
+
+def _plain_result(r: dict) -> dict:
+    """把 LabelOps 的结果变成能安全打印/序列化的字典。
+
+    结果里会顺手带上 UIA 控件对象（``win`` / ``cell``），那是给同一次调用内部
+    用的；直接塞进 ``WxResponse.data`` 会让用户 ``print`` 出一个控件 repr，
+    ``json.dumps`` 还会当场抛。
+    """
+    out = {}
+    for k, v in (r or {}).items():
+        if k in ('win', 'cell') or hasattr(v, 'BoundingRectangle'):
+            continue
+        if isinstance(v, list):
+            v = [x for x in v if not hasattr(x, 'BoundingRectangle')]
+        out[k] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +534,22 @@ class Chat:
         """获取当前聊天窗口最近 50 条消息。"""
         rows = self._db.get_messages(self._wxid, limit=50)
         self_wxid = self._db.get_self_info()['username']
-        return [_db_row_to_message(r, self, self_wxid) for r in rows]
+        return [_db_row_to_message(r, self, self_wxid, self._db) for r in rows]
+
+    def GetGroupMembers(self) -> List[dict]:
+        """群成员列表（静态读库，不点界面）：``username`` / ``nick_name`` /
+        ``remark`` / ``is_owner``。不是群聊时返回空列表。
+
+        配合监听回调里的 ``msg.sender_wxid`` 用：群里那些**不在你通讯录**的人，
+        只有这张表能给出名字。
+        """
+        wxid = self._wxid or ''
+        if not wxid.endswith('@chatroom'):
+            return []
+        try:
+            return self._db.get_group_members(wxid)
+        except Exception:
+            return []
 
     def GetNewMessage(self, max_backlog: int = 5000) -> List['Message']:
         """获取新消息（首次调用仅建立基线，返回空列表）。
@@ -480,7 +583,7 @@ class Chat:
         # 水位只推进到实际取回的最后一条（而非数据库最新位置）
         self._last_seq = rows[-1]['sort_seq']
         self_wxid = self._db.get_self_info()['username']
-        return [_db_row_to_message(r, self, self_wxid) for r in rows]
+        return [_db_row_to_message(r, self, self_wxid, self._db) for r in rows]
 
     def GetMessageById(self, msg_id) -> Optional['Message']:
         """根据消息 local_id 获取消息实例。"""
@@ -491,7 +594,7 @@ class Chat:
         row = self._db.get_message_row(self._wxid, local_id)
         if not row:
             return None
-        return _db_row_to_message(row, self)
+        return _db_row_to_message(row, self, db=self._db)
 
     def GetMessageByHash(self, msg_hash: str) -> Optional['Message']:
         """根据消息哈希值获取消息实例。"""
@@ -499,7 +602,7 @@ class Chat:
             return None
         self_wxid = self._db.get_self_info()['username']
         for row in self._db.get_messages(self._wxid, limit=200):
-            m = _db_row_to_message(row, self, self_wxid)
+            m = _db_row_to_message(row, self, self_wxid, self._db)
             if m.hash == msg_hash or getattr(m, 'hash_text', None) == msg_hash:
                 return m
         return None
@@ -509,7 +612,7 @@ class Chat:
         rows = self._db.get_messages(self._wxid, limit=1)
         if not rows:
             return None
-        return _db_row_to_message(rows[0], self)
+        return _db_row_to_message(rows[0], self, db=self._db)
 
 
 # ---------------------------------------------------------------------------
@@ -524,13 +627,15 @@ class WeChat(Chat, Listener):
             nickname: str = None,
             start_listener: bool = False,
             debug: bool = False,
+            gui=None,
+            db=None,
             **kwargs
         ):
         from wechatauto.guia import WeChatGUI
         from wechatauto.db import WeChatDB
 
-        self._gui = WeChatGUI()
-        self._db = WeChatDB()
+        self._gui = gui if gui is not None else WeChatGUI()
+        self._db = db or WeChatDB()
         info = self._db.get_self_info()
         self.nickname = nickname or info.get('nick_name') or info.get('username') or ''
         self.who = self.nickname
@@ -538,6 +643,7 @@ class WeChat(Chat, Listener):
         self.listen: Dict[str, tuple] = {}
         self._listener = None
         self._listen_wrappers: Dict[str, Callable] = {}
+        self._all_chat_cache: Dict[str, object] = {}
         self._listener_is_listening = False
         self._listener_stop_event = threading.Event()
         self._current_chat: Optional['Chat'] = None
@@ -551,6 +657,472 @@ class WeChat(Chat, Listener):
         if debug:
             wxlog.set_debug(True)
             wxlog.debug('Debug mode is on')
+
+    # -- 通讯录标签（UIA 控件路线）-----------------------------------------
+
+    def _labels(self, uia=None):
+        """构造 :class:`LabelOps`；UIA 树不可用时返回 None。"""
+        from wechatauto.labels import LabelOps
+        eng = uia if uia is not None else self._gui._get_uia()
+        if eng is None:
+            eng = self._gui._get_uia(refresh=True)
+        if eng is None:
+            return None
+        return LabelOps(uia=eng, db=self._db)
+
+    def _display_names(self, members) -> List[str]:
+        """把 wxid/微信号换成界面上显示的那个名字（备注 > 昵称）。
+
+        标签面板的成员列表按**显示名**渲染，拿 wxid 去勾一个都勾不上。
+        """
+        out = []
+        for m in members or []:
+            m = str(m).strip()
+            if not m:
+                continue
+            try:
+                nick = self._db.get_nickname(m)
+            except Exception:
+                nick = m
+            out.append(nick or m)
+        return out
+
+    @uilock
+    def ListLabels(self, prefer: str = "db") -> WxResponse:
+        """列出所有标签。
+
+        ``prefer='db'``（默认）读 contact.db，不碰窗口——**删掉的标签在库里会
+        滞后**（实测：界面上已经删干净了，``contact_label`` 还留着那两行）。
+        要准数用 ``prefer='ui'``，它读管理窗左栏，顺带带上微信自己显示的人数。
+
+        Returns:
+            WxResponse，``data['labels']`` 为 ``[{label_id, name, sort_order}]``
+            （走库）或 ``[{name, count}]``（走界面）。
+        """
+        ops = self._labels()
+        if prefer != "ui":
+            try:
+                rows = (ops.list_labels(prefer="db")["labels"] if ops is not None
+                        else self._db.list_labels())
+            except Exception as e:
+                return WxResponse.failure(f'读取标签列表失败：{e}')
+            return WxResponse.success(f'共 {len(rows)} 个标签',
+                                      {'labels': rows, 'via': 'db'})
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，读不了界面里的标签列表')
+        try:
+            r = ops.list_labels(prefer="ui")
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(r['reason'], {'labels': r.get('labels', [])})
+        return WxResponse.success(f"共 {len(r['labels'])} 个标签",
+                                  {'labels': r['labels'], 'via': r['reason']})
+
+    @uilock
+    def CreateLabel(self, name: str, verify: bool = True) -> WxResponse:
+        """新建一个标签（已存在时直接算成功）。
+
+        Args:
+            name: 标签名。微信是「先建出空标签、再改名」两步，改名走剪贴板粘贴
+                + 回车（实测行内编辑框不进 UIA）。
+            verify: 建完回读左栏标签行确认；没改成名字时**明确报 not-renamed**，
+                不含糊报成功（那条路径会在账号上留一个「未命名」标签，得说清楚）。
+        """
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法创建标签')
+        try:
+            r = ops.create_label(name, verify=verify)
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(f"创建标签失败：{r['reason']}", _plain_result(r))
+        return WxResponse.success(f"标签「{name}」已就绪", _plain_result(r))
+
+    @uilock
+    def RenameLabel(self, old: str, new: str) -> WxResponse:
+        """改标签名（右键 →「修改标签名」→ 剪贴板粘贴 + 回车）。
+
+        Args:
+            old: 现在的标签名。
+            new: 改成什么。只改名字，成员和 label_id 都不动。
+        """
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法改标签名')
+        try:
+            r = ops.rename_label(old, new)
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(f"改标签名失败：{r['reason']}", _plain_result(r))
+        return WxResponse.success(f"标签「{old}」已改名为「{new}」", _plain_result(r))
+
+    @uilock
+    def AddLabelMembers(self, label: str, members, verify: bool = True) -> WxResponse:
+        """给标签批量添加成员。
+
+        Args:
+            label: 标签名；不存在时先创建。
+            members: 成员列表，接受备注名/昵称/wxid（wxid 会自动换成显示名）。
+            verify: 完成后回读左栏标签行上的成员数（``同学(63)`` 那个数字）。
+                人数没变就报 ``count-unchanged``，不报成功。
+
+        Returns:
+            WxResponse，``data['missing']`` 是一个都没勾上的名字，
+            ``data['count_before']`` / ``data['count_after']`` 是成员数变化。
+        """
+        return self._label_members(label, members, remove=False, verify=verify)
+
+    @uilock
+    def RemoveLabelMembers(self, label: str, members) -> WxResponse:
+        """把成员从标签里移出（只去标签，不会删好友）。"""
+        return self._label_members(label, members, remove=True)
+
+    def _label_members(self, label: str, members, remove: bool,
+                       verify: bool = True) -> WxResponse:
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法操作标签成员')
+        names = self._display_names(
+            [members] if isinstance(members, str) else list(members or []))
+        act = '移出' if remove else '添加'
+        if not names:
+            return WxResponse.failure(f'{act}成员失败：成员列表为空')
+        try:
+            r = (ops.remove_members(label, names) if remove
+                 else ops.add_members(label, names, verify=verify))
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(f"{act}成员失败：{r['reason']}", _plain_result(r))
+        done = r.get('clicked') or r.get('picked') or []
+        detail = "标签「%s」%s %d 人" % (label, act, len(done))
+        if r.get('count_before') is not None and r.get('count_after') is not None:
+            detail += "（成员数 %s → %s）" % (r['count_before'], r['count_after'])
+        missing = r.get('missing') or []
+        if missing:
+            detail += f"，没弄上：{'、'.join(missing)}"
+        return WxResponse.success(detail, _plain_result(r))
+
+    @uilock
+    def DeleteLabel(self, name: str) -> WxResponse:
+        """删掉一个标签。只去标签，**不删好友**（微信的确认文案就这么写）。"""
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法删除标签')
+        try:
+            r = ops.delete_label(name)
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(f"删除标签失败：{r['reason']}", _plain_result(r))
+        return WxResponse.success(f"标签「{name}」已删除", _plain_result(r))
+
+    @uilock
+    def LabelMembers(self, label: str, limit: int = None) -> WxResponse:
+        """列出一个标签里的**全部**成员（右侧列表是虚拟化的，靠滚动取全量）。
+
+        只读界面，不发消息。``data['complete']`` 说清楚有没有取全
+        （拿微信自己显示的人数对：``同学(63)`` 对到 63 个才算全）。
+        """
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法读取标签成员')
+        try:
+            r = ops.label_members(label, limit=limit)
+        finally:
+            ops.back_to_chat()
+        if not r['ok']:
+            return WxResponse.failure(f"读取成员失败：{r['reason']}", _plain_result(r))
+        res = ops.resolve_members(r['members'])
+        names = [x['display'] for x in res['recipients']]
+        extra = ''
+        if r.get('gapped'):
+            extra += f"，有一屏没按名字接上（按微信显示的 {r['count']} 人核过）"
+        if res['skipped']:
+            extra += f"，{len(res['skipped'])} 个人没认出来/重名（见 data['skipped']）"
+        return WxResponse.success(
+            f"标签「{label}」微信显示 {r['count']} 人，读到 {len(r['members'])} 人"
+            f"（{r['reason']}），其中 {len(names)} 个能唯一对上 wxid{extra}",
+            dict(_plain_result(r), recipients=res['recipients'],
+                 skipped=res['skipped'], names=names))
+
+    @uilock
+    def SendToLabel(self, text: str, label: str, members=None,
+                    dry_run: bool = False, limit: int = None,
+                    verify: bool = True) -> WxResponse:
+        """按标签批量发同一条文本（先读成员，再逐个走普通发送通道）。
+
+        Args:
+            text: 消息正文。
+            label: 标签名。
+            members: 只发给其中一部分（显示名或 wxid 的列表）；不给=全发。
+            dry_run: **只解析收件人不发送**——第一次用请先跑这个。
+            limit: 最多发几个人（试水用）。
+            verify: 每个人发完都回读数据库确认（``send_msg`` 自带的水位校验）。
+
+        安全口径：每个成员都要先在通讯录里**唯一命中一个 wxid** 才会被发；
+        重名的人和查不到的人进 ``data['skipped']`` 交回来，不猜人——按标签
+        群发发错人是最贵的一种错。发送本身走 :meth:`Chat.SendMsg` 同一条路，
+        每一笔都过 :mod:`wechatauto.rhythm` 的拟人节流。
+
+        Returns:
+            WxResponse，``data`` 里有 ``sent`` / ``failed`` / ``skipped`` /
+            ``recipients`` / ``dry_run``。
+        """
+        if not (text or '').strip():
+            return WxResponse.failure('批量发送失败：正文为空')
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法读取标签成员')
+        got = ops.label_members(label, limit=None)
+        if not got['ok']:
+            return WxResponse.failure(f"读取标签成员失败：{got['reason']}",
+                                      _plain_result(got))
+        res = ops.resolve_members(got['members'])
+        recipients = res['recipients']
+        if members:
+            want = {str(m).strip() for m in members}
+            recipients = [x for x in recipients
+                          if x['display'] in want or x['username'] in want]
+            if not recipients:
+                return WxResponse.failure(
+                    '指定的成员都不在该标签里（名字要和界面显示一致）',
+                    {'names': [x['display'] for x in res['recipients']]})
+        if limit:
+            recipients = recipients[:int(limit)]
+        base = {'label': label, 'total_in_label': got['count'],
+                'dry_run': bool(dry_run), 'recipients': recipients,
+                'skipped': res['skipped']}
+        if dry_run:
+            return WxResponse.success(
+                f"预演：标签「{label}」可发 {len(recipients)} 人，"
+                f"跳过 {len(res['skipped'])} 人（没有真的发出去）", base)
+        sent, failed = [], []
+        gui = self._gui
+        if gui is None:                       # 离线自测注入的假发送通道
+            from wechatauto.guia import WeChatGUI
+            gui = WeChatGUI()
+        for r in recipients:
+            one = gui.send_msg(text, who=r['display'], verify=verify)
+            item = dict(r)
+            if one['status'] == '成功':
+                sent.append(item)
+            else:
+                item['reason'] = one.get('message')
+                failed.append(item)
+        msg = (f"标签「{label}」已发 {len(sent)} 人"
+               + (f"，失败 {len(failed)} 人" if failed else "")
+               + (f"，跳过 {len(res['skipped'])} 人" if res['skipped'] else ""))
+        out = WxResponse.failure if (failed and not sent) else WxResponse.success
+        return out(msg, dict(base, sent=sent, failed=failed))
+
+    def _forward(self):
+        """构造 :class:`ForwardOps`；UIA 树不可用时返回 None。"""
+        from wechatauto.forward import ForwardOps
+        eng = self._gui._get_uia()
+        if eng is None:
+            eng = self._gui._get_uia(refresh=True)
+        if eng is None:
+            return None
+        return ForwardOps(uia=eng, db=self._db)
+
+    @staticmethod
+    def _match_key(text: str) -> Optional[str]:
+        """给「刚发出去的那一条」定一个定位串：取首行前 24 字。
+
+        转发必须先**在界面上找到那条消息**再右键。刚发的正文就是最直接的锚点；
+        太短（<4 字）的正文容易和别的气泡撞名，那种就退回「右键最新一条」。
+        """
+        line = (text or "").strip().splitlines()
+        if not line:
+            return None
+        key = line[0].strip()
+        return key[:24] if len(key) >= 4 else None
+
+    def _seed_then_forward(self, names, text, dry_run, chunk, verify):
+        """先老老实实发给第一个人，再把**那一条**分别转发给剩下的人。
+
+        为什么要有这条路：右键转发的物料必须已经在某个会话里躺着——不先发一条，
+        「转发」根本没有可点的目标。第一个人拿的是原件（普通消息），剩下的人拿的是
+        转发件，所以总数正好等于名单长度，不会重发。
+        """
+        first, rest = names[0], names[1:]
+        if dry_run:
+            return {'ok': True, 'reason': 'plan', 'seed': first, 'rest': rest,
+                    'chunks': (len(rest) + chunk - 1) // chunk if rest else 0,
+                    'sent': [], 'failed': [], 'skipped': []}
+        one = self._gui.send_msg(text, who=first, verify=verify)
+        if not one or one.get('status') != '成功':
+            return {'ok': False, 'reason': 'seed-fail：第一条没发出去，'
+                                           '后面没有可转发的消息（%s）'
+                    % (one.get('message') if one else '无返回'),
+                    'seed': first, 'rest': rest, 'sent': [], 'failed': list(rest),
+                    'skipped': []}
+        if not rest:
+            return {'ok': True, 'reason': 'seed-only', 'seed': first, 'rest': [],
+                    'chunks': 0, 'sent': [first], 'failed': [], 'skipped': []}
+        ops = self._forward()
+        r = ops.forward(rest, chat=first, match=self._match_key(text),
+                        chunk=chunk, verify=verify)
+        r['seed'] = first
+        r['sent'] = [first] + list(r.get('sent') or [])
+        return r
+
+    @uilock
+    def ForwardMessage(self, to, chat: str = None, match: str = None,
+                       dry_run: bool = False, chunk: int = None,
+                       verify: bool = True, text: str = None) -> WxResponse:
+        """把一条消息分别转发给 ``to``。
+
+        Args:
+            to: 收件人，单个名字或列表。
+            text: **正文**。给了它就走「先发给第一个人 → 再把那一条转发给剩下的」；
+                不给就转发 ``chat``（或当前会话）里已有的一条。
+            chat: 在哪个会话里右键；不给就用当前打开的会话。
+            match: 按文字定位那一条消息；不给就右键**最新一条**。
+            dry_run: 只开窗、勾选、核对按钮上的人数，最后点取消，**一条都不发**。
+                给了 ``text`` 时预演连窗口都不开（那时候还没有可转发的消息）。
+            chunk: 一个转发窗勾几个人（默认 9）；块与块之间过 rhythm。
+            verify: 发完回读每个人的会话，看有没有比发送时刻更新的一行消息。
+
+        「分别发送(N)」那颗按钮上的 N 是真值：勾的人和按钮数的对不上就停下来报
+        ``count-mismatch``，不会把消息发出去。
+        """
+        ops = self._forward()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法转发消息')
+        names = [str(n).strip() for n in (([to] if isinstance(to, str) else list(to or []))
+                                          if to else []) if str(n).strip()]
+        if text and text.strip():
+            if len(names) < 2:
+                return WxResponse.failure('给了正文但只有 1 个收件人：那直接 SendMsg 就行，不用转发')
+            r = self._seed_then_forward(names, text.strip(), dry_run,
+                                        chunk or 9, verify)
+            return self._forward_response(r, dry_run, len(names))
+        r = ops.forward(names, chat=chat, match=match, dry_run=dry_run,
+                        chunk=chunk or 9, verify=verify)
+        return self._forward_response(r, dry_run, len(names))
+
+    @staticmethod
+    def _forward_response(r, dry_run, total) -> WxResponse:
+        if dry_run:
+            if not r.get('ok'):
+                return WxResponse.failure(f"预演没走通：{r['reason']}", r)
+            if r.get('reason') == 'plan':
+                return WxResponse.success(
+                    f"预演：先发给「{r['seed']}」1 人，再把这条分别转发给剩下 "
+                    f"{len(r['rest'])} 人（分 {r['chunks']} 块）——"
+                    f"窗口都没开，一条都没发", r)
+            return WxResponse.success(
+                f"预演：{(r.get('picked') or [])} 已勾上（{r.get('chunks')} 块），"
+                f"没有真的发出去", r)
+        if not r.get('ok'):
+            # 已经落库的那些人必须点名：这条链是「先发第一个人 → 再转发给剩下的」，
+            # 中途失败时第一个人**真的收到了一条**。不写出来，用户照着提示重跑一遍
+            # 就会给他发第二遍。
+            already = [x for x in (r.get('sent') or []) if x]
+            note = ("（注意：已发出的 %s 条已经在库里，重跑会再发一遍，"
+                    "先把这几个人剔掉）" % len(already)) if already else ""
+            return WxResponse.failure(
+                f"转发失败：{r['reason']}{note}",
+                dict(r, already_sent=already))
+        seed = r.get('seed')
+        return WxResponse.success(
+            f"已分别转发给 {len(r.get('sent') or [])} 人"
+            + (f"（含先发的「{seed}」原件）" if seed and seed in (r.get('sent') or []) else "")
+            + (f"，失败 {len(r['failed'])} 人" if r.get('failed') else "")
+            + (f"，跳过 {len(r['skipped'])} 人" if r.get('skipped') else ""), r)
+
+    @uilock
+    def ForwardToLabel(self, label: str, chat: str = None, match: str = None,
+                       dry_run: bool = True, limit: int = None,
+                       chunk: int = None, verify: bool = True,
+                       text: str = None) -> WxResponse:
+        """把一条消息按**标签**分别转发给标签里的每个人（默认只预演）。
+
+        收件人来自 :meth:`LabelMembers` 那套滚动枚举；每个人都要在通讯录里
+        **唯一命中一个 wxid** 才会被转发，重名/查不到的进 ``data['skipped']``，
+        不猜人。节奏是分小块（默认 9 人/块），块与块之间过 rhythm。
+
+        Args:
+            text: 正文。给了它就**先发给名单里第一个人**，再把那一条分别转发给
+                剩下的人——右键转发的物料得先在界面上存在，不然没东西可转。
+                第一个人拿原件、其余拿转发件，每人恰好一条。
+            chat / match: 不给 ``text`` 时用这两个指定「转发哪一条已有的消息」。
+
+        ``dry_run`` 给了 ``text`` 时**连窗口都不开**（这时候还没有可转发的消息），
+        只把名单、分块和第一个收件人报出来。
+        """
+        ops = self._forward()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法转发消息')
+        got = ops.label_members(label, limit=None)
+        if not got['ok']:
+            return WxResponse.failure(f"读取标签成员失败：{got['reason']}",
+                                      _plain_result(got))
+        res = ops.resolve_members(got['members'])
+        recipients = res['recipients']
+        if limit:
+            recipients = recipients[:int(limit)]
+        names = [x['display'] for x in recipients]
+        base = {'label': label, 'total_in_label': got['count'],
+                'dry_run': bool(dry_run), 'recipients': recipients,
+                'skipped': res['skipped']}
+        if not names:
+            return WxResponse.failure(
+                f"标签「{label}」里没有能唯一对上 wxid 的人（{len(res['skipped'])} 人都对不上）",
+                base)
+        if text and text.strip():
+            if len(names) < 2:
+                return WxResponse.failure(
+                    f"标签「{label}」只有 {len(names)} 个人可发，直接 SendMsg 就行，"
+                    f"不用先发再转", base)
+            r = self._seed_then_forward(names, text.strip(), dry_run,
+                                        chunk or 9, verify)
+            return self._forward_response(r, dry_run, len(names))
+        r = ops.forward(names, chat=chat, match=match, dry_run=dry_run,
+                        chunk=chunk or 9, verify=verify)
+        if dry_run:
+            if not r['ok']:
+                return WxResponse.failure(f"预演没走通：{r['reason']}",
+                                          dict(base, detail=r))
+            return WxResponse.success(
+                f"预演：标签「{label}」可转发 {len(names)} 人，"
+                f"分 {r.get('chunks')} 块，跳过 {len(res['skipped'])} 人（没发）",
+                dict(base, chunks=r.get('chunks'), picked=r.get('picked')))
+        if not r['ok']:
+            return WxResponse.failure(f"按标签转发失败：{r['reason']}",
+                                      dict(base, detail=r))
+        return WxResponse.success(
+            f"标签「{label}」已分别转发给 {len(r.get('sent') or [])} 人"
+            + (f"，失败 {len(r['failed'])} 人" if r.get('failed') else "")
+            + (f"，跳过 {len(res['skipped'])} 人" if res['skipped'] else ""),
+            dict(base, sent=r.get('sent'), failed=r.get('failed'),
+                 skipped=r.get('skipped'), chunks=r.get('chunks')))
+
+    @uilock
+    def ProbeLabels(self, dump_dir: str = None) -> WxResponse:
+        """走一遍「通讯录 → 通讯录管理 → 标签」，只导航不写，报每一步判定。
+
+        界面文案/控件类名随版本漂移时用这个定位是哪一段断了。
+        """
+        ops = self._labels()
+        if ops is None:
+            return WxResponse.failure('UIA 驱动不可用，无法探测')
+        ops.dump_dir = dump_dir
+        try:
+            steps = ops.probe()
+        finally:
+            ops.back_to_chat()
+        bad = [s for s in steps if not s['ok']]
+        data = {'steps': steps}
+        if bad:
+            return WxResponse.failure(
+                f"探测到「{bad[0]['step']}」这一步断：{bad[0]['reason']}", data)
+        return WxResponse.success(f"{len(steps)} 步全部走通", data)
 
     # -- 朋友圈（UIA 控件路线）--------------------------------------------
 
@@ -639,8 +1211,31 @@ class WeChat(Chat, Listener):
             if not hwnd:
                 return False
             root = _uia.ControlFromHandle(hwnd)
-        except Exception:
+        except Exception as exc:
+            wxlog.debug(f'UIA 根控件获取失败：{exc!r}')
             return False
+
+        # 树没物化时 ControlFromHandle 只拿到 Qt 空壳（微信重启/升级后 gate byte
+        # 归零），下面每条查找都会落空，最后报出来的却是「找不到导航按钮」，
+        # 很容易被误判成版本不兼容。先按需唤醒 mmui 树，再重新锚定根控件。
+        def _tree_ready(node) -> bool:
+            try:
+                return _find_descendant(
+                    node,
+                    lambda c: (getattr(c, 'ClassName', '') or '').startswith('mmui::MainTabBar')
+                    or (getattr(c, 'ClassName', '') or '') == 'mmui::SNSContentView',
+                    max_depth=15) is not None
+            except Exception:
+                return False
+
+        if root is not None and not _tree_ready(root):
+            try:
+                from wechatauto.uia_driver import WeChatUIA
+                if WeChatUIA().ensure_materialized(timeout=6.0):
+                    root = _uia.ControlFromHandle(hwnd) or root
+                    wxlog.debug('进朋友圈前已唤醒 mmui 树')
+            except Exception as exc:
+                wxlog.debug(f'唤醒 mmui 树失败：{exc!r}')
 
         def _has_timeline() -> bool:
             try:
@@ -649,7 +1244,8 @@ class WeChat(Chat, Listener):
                     return True
                 sc = _find_descendant(root, lambda c: getattr(c, 'ClassName', '') == 'mmui::SNSContentView', max_depth=30)
                 return sc is not None
-            except Exception:
+            except Exception as exc:
+                wxlog.debug(f'朋友圈控件探测失败：{exc!r}')
                 return False
 
         if _has_timeline():
@@ -726,6 +1322,13 @@ class WeChat(Chat, Listener):
             wrapper = self._make_listen_cb(chat, _cb)
             self._listen_wrappers[name] = wrapper
             self._listener.add_listener(chat._wxid, wrapper)
+        # 全局监听也要在重建监听器时补挂：否则 StopListening() 之后再
+        # StartListening()，AddListenAll 的回调就悄悄没了，而
+        # _listen_all_active 还是 True，再调 AddListenAll 只会回「已开启全局监听」。
+        if (getattr(self, '_listen_all_active', False)
+                and getattr(self, '_listen_all_wrapper', None)):
+            self._listener.add_all(self._listen_all_wrapper,
+                                   discover=getattr(self, '_listen_all_discover', True))
         self._listener.start()
         self._listener_is_listening = True
         self._listener_stop_event.clear()
@@ -741,7 +1344,7 @@ class WeChat(Chat, Listener):
 
         def _wrapper(row: dict, listener) -> None:
             try:
-                msg = _db_row_to_message(row, chat, self_wxid)
+                msg = _db_row_to_message(row, chat, self_wxid, self._db)
                 callback(msg, chat)
             except Exception:
                 import traceback
@@ -791,10 +1394,15 @@ class WeChat(Chat, Listener):
         """监听所有会话的新消息（包括好友、群聊、文件传输助手等）。
 
         Args:
-            callback: 回调函数，参数为 (Message 对象, Chat-like 对象)。
-                Chat-like 对象的 .who 属性为会话原始 username。
+            callback: 回调函数，参数为 (Message 对象, Chat 对象)。第二个参数的
+                ``.who`` 是会话 username、``.nickname`` 是显示名；想直接在回调里
+                回话就调 ``chat.SendMsg(...)``（第一次用时按需构造真 Chat 并缓存，
+                不会为每条消息都初始化 GUI）。
             discover: 为 True 时自动发现新出现的会话（如新群聊）并注册
                 回调，无需重复调用。默认 True。
+
+        已经用 ``AddListenChat`` 单独监听过的会话**同样**会收到这里的回调
+        （一个会话可以挂多个回调）。
 
         Returns:
             WxResponse
@@ -816,15 +1424,27 @@ class WeChat(Chat, Listener):
 
         def _wrap(row: dict, listener) -> None:
             try:
-                username = row.get('username', '')
-                fake_chat = _AllMessageChat(username)
-                msg = _db_row_to_message(row, fake_chat, self_wxid)
-                callback(msg, fake_chat)
+                username = row.get('username', '') or ''
+                chat = self._all_chat_cache.get(username)
+                if chat is None:
+                    try:
+                        nick = self._db.get_nickname(username) or ''
+                    except Exception:
+                        nick = ''
+                    chat = _AllMessageChat(
+                        username, nick,
+                        factory=lambda who: Chat(who, self._gui, self._db),
+                        db=self._db)
+                    self._all_chat_cache[username] = chat
+                msg = _db_row_to_message(row, chat, self_wxid, self._db)
+                callback(msg, chat)
             except Exception:
                 import traceback
                 wxlog.debug(f'全局监听回调发生错误：{traceback.format_exc()}')
 
         self._listen_all_callback = callback
+        self._listen_all_wrapper = _wrap
+        self._listen_all_discover = discover
         self._listen_all_active = True
         if self._listener is not None:
             self._listener.add_all(_wrap, discover=discover)
@@ -836,6 +1456,7 @@ class WeChat(Chat, Listener):
             return WxResponse.failure('未开启全局监听')
         self._listen_all_active = False
         self._listen_all_callback = None
+        self._listen_all_wrapper = None
         if self._listener is not None:
             self._listener._discover_new = False
             self._listener._all_callback = None

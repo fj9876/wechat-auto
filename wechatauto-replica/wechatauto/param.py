@@ -38,6 +38,12 @@ class WxParam:
     # 发送文件超时时间，单位秒
     SEND_FILE_TIMEOUT: int = 10
 
+    # 粘贴后回读校验，相似度达到该阈值才按回车；<=0 表示关闭回读校验
+    SEND_CONTENT_RATIO: float = 0.6
+
+    # 是否允许使用 OCR（Windows 自带 WinRT 识别）作为定位/对齐兜底手段
+    ENABLE_OCR: bool = True
+
 class WxResponse(dict):
     def __init__(self, status: str, message: str, data: dict = None):
         super().__init__(status=status, message=message, data=data)

@@ -31,13 +31,15 @@ UIA 树会立即物化为 ``mmui::MainWindow``，其中：
 from __future__ import annotations
 
 import ctypes
+import difflib
+import json
 import os
 import re
 import struct
 import time
 from ctypes import wintypes
 from functools import lru_cache
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import uiautomation as auto
 
@@ -47,7 +49,9 @@ try:
 except Exception:                                   # pragma: no cover
     _HAS_WIN32 = False
 
+from wechatauto import rhythm
 from wechatauto.logger import wxlog
+from wechatauto.param import WxParam
 
 # ---------------------------------------------------------------------------
 # 控件锚点
@@ -63,6 +67,28 @@ SESSION_LIST_AID = "session_list"
 SEARCH_LIST_AID = "search_list"
 RESULT_AID_PREFIX = "search_item_"                 # 真实可打开结果的 aid 前缀
 CHAT_INPUT_AID = "chat_input_field"                # 输入框；其 .Name == 当前聊天对象
+# 输入框控件的 Name 是「会话名 + 输入占位符尾巴」拼出来的：框内为空时占位符
+# 会被拼进 Name。2026-10-07 本机 4.1.15.13 实测尾巴是「按住鼠标 语音输入文字」
+# （文件传输助手 → Name = "文件传输助手按住鼠标 语音输入文字"）。不剥掉的话
+# 全库那些 ``current_chat() == who`` 比较统统失效：会话明明已经打开，open_chat
+# 照样返回 False，发送被推去走 OCR/坐标路径（慢且更易错）。
+# 未命中任何尾巴就原样返回，行为与剥之前的版本一致。
+CHAT_NAME_SUFFIXES = ("按住鼠标 语音输入文字", "按住鼠标语音输入文字", "语音输入文字")
+
+
+def _clean_chat_name(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    stripped = name.strip()
+    for suffix in CHAT_NAME_SUFFIXES:
+        if stripped.endswith(suffix):
+            head = stripped[:-len(suffix)].strip()
+            if head:
+                return head
+    return stripped or None
+# 行内表情码：微信输入框把 [微笑] 这类代码渲染成 1 个 U+FFFC 对象占位符
+# （2026-10-04 实测 4.1.15.13），发送前回读比对时要按这个折算。
+_STICKER_CODE = re.compile(r"\[[^\[\]]{1,10}\]")
 
 # ---------------------------------------------------------------------------
 # 新旧版本兼容候选
@@ -80,6 +106,17 @@ SEARCH_LIST_AIDS = ("search_list",)
 CHAT_INPUT_AIDS = ("chat_input_field",)
 SNS_LIST_CLASSES = ("mmui::TimeLineListView",)
 SNS_LIST_AIDS = ("sns_list",)
+
+# 「扫不到可用窗口」这类失败每种原因一个进程只警告一次（长驻进程每轮都扫）
+_GATE_BLOCK_WARNED = set()
+
+# 左侧导航栏（4.1.13 实测）：MainTabBar 下四个 XTabBarItem，顺序固定
+# 微信/通讯录/收藏/发现。tab 自己读不到选中态（ButtonControl，既不支持
+# SelectionItem 模式，LegacyIAccessible.State 也恒为 0），各页控件在树里又常驻，
+# 所以判不出当前页——只能无条件点一下，见 WeChatUIA.back_to_chat_tab。
+MAIN_TAB_BAR_CLS = "mmui::MainTabBar"
+TAB_ITEM_CLS = "mmui::XTabBarItem"
+CHAT_TAB_NAME = "微信"
 
 
 def _title_is_main(title: str) -> bool:
@@ -153,6 +190,7 @@ SPIF_SENDCHANGE = 0x02
 QACCESSIBLE_ACTIVE_RVA_BY_VERSION = {
     "4.1.11.22": 0x0A1E7DB8,
     "4.1.13.65": 0x0AE2B0C8,   # 2026-09-12 实测：热写后 mmui 树立即物化
+    "4.1.15.13": 0x0B135C38,   # 2026-09-23 实测：扫描得出，热写后校验通过
 }
 QACCESSIBLE_CORE_STRING = b"qt.accessibility.core"
 QACCESSIBLE_GATE_PATTERN = re.compile(
@@ -163,6 +201,7 @@ QACCESSIBLE_GATE_PATTERN = re.compile(
 
 # 已验证的 gate RVA：按 Weixin.dll 身份（版本目录+大小+mtime）缓存。
 # 好处：换版本后优先使用上次真正生效过的地址；命中时无需重扫 198MB DLL。
+# 这份表同时落盘（见下），否则每个新进程都要重付扫描成本。
 _VERIFIED_GATE_RVA: Dict[str, int] = {}
 
 
@@ -174,6 +213,46 @@ def _dll_identity(dll_path: str) -> str:
         return "%s|%d|%d" % (ver, st.st_size, int(st.st_mtime))
     except OSError:
         return dll_path
+
+
+# gate 扫描结果按 DLL 身份落盘。必须落盘而不是只留 lru_cache：本库的典型用法
+# 是一个脚本一个新 Python 进程，进程内缓存在这种用法下等于没有——每次启动都
+# 重扫一遍 198MB 的 Weixin.dll（实测 8 秒，慢机上更像卡死）。
+GATE_CACHE_FILE = os.path.join(os.path.expanduser('~'), '.wechatauto',
+                               'gate_cache.json')
+_GATE_CACHE: Optional[Dict[str, dict]] = None
+
+
+def _gate_cache() -> Dict[str, dict]:
+    """读落盘的 gate 缓存（损坏/不存在都按空表处理，不抛）。"""
+    global _GATE_CACHE
+    if _GATE_CACHE is None:
+        data: Dict[str, dict] = {}
+        try:
+            with open(GATE_CACHE_FILE, encoding='utf-8') as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                data = {k: v for k, v in raw.items() if isinstance(v, dict)}
+        except (OSError, ValueError):
+            pass
+        _GATE_CACHE = data
+    return _GATE_CACHE
+
+
+def _gate_cache_put(identity: str, **fields) -> None:
+    """合并写回一条 gate 缓存。写失败只留 debug：缓存丢了不过是重扫一次。"""
+    entry = _gate_cache().setdefault(identity, {})
+    entry.update(fields)
+    try:
+        os.makedirs(os.path.dirname(GATE_CACHE_FILE), exist_ok=True)
+        tmp = GATE_CACHE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(_gate_cache(), f, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, GATE_CACHE_FILE)
+    except OSError as e:
+        wxlog.debug(f'gate 缓存写盘失败（不影响功能）：{e}')
+
+
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
 IMAGE_SCN_MEM_WRITE = 0x80000000
 PROCESS_VM_OPERATION = 0x0008
@@ -248,14 +327,61 @@ class WeChatUIA:
     # ------------------------------------------------------------------ 基础
     @staticmethod
     def is_running() -> bool:
+        """微信是否在运行（多判据；**不把“探测失败”当成“未运行”**）。
+
+        判据：① tasklist（中文 Windows 输出为 GBK）；② 主窗口标题（微信/Weixin，
+        登录窗也算）；③ psutil 进程枚举。任一命中即 True。
+        只有**所有判据都出错失败**时才写一行 stderr 说明原因——避免把探测失败
+        伪装成“微信没在运行”（那种假报错会误导上层去重启/唤起微信）。
+        """
+        errors, absent = [], []
         try:
             import subprocess
-            out = subprocess.run(["tasklist", "/fi", "imagename eq Weixin.exe",
-                                  "/nh"], capture_output=True, text=True,
-                                 timeout=10).stdout or ""
-            return "Weixin.exe" in out
-        except Exception:
-            return False
+            out = subprocess.run(
+                ["tasklist", "/fi", "imagename eq Weixin.exe", "/nh"],
+                capture_output=True, text=True, encoding="gbk", errors="replace",
+                timeout=10).stdout or ""
+            if "Weixin.exe" in out:
+                return True
+            absent.append("tasklist")
+        except Exception as exc:
+            errors.append("tasklist: %r" % (exc,))
+        try:
+            if _HAS_WIN32:
+                hits = []
+
+                def _cb(hwnd, _):
+                    try:
+                        if win32gui.IsWindowVisible(hwnd) and _title_is_main(
+                                win32gui.GetWindowText(hwnd)):
+                            hits.append(hwnd)
+                    except Exception:
+                        pass
+                    return True
+
+                win32gui.EnumWindows(_cb, None)
+                if hits:
+                    return True
+                absent.append("主窗口标题")
+            else:
+                errors.append("主窗口标题: 无 win32")
+        except Exception as exc:
+            errors.append("主窗口标题: %r" % (exc,))
+        try:
+            import psutil
+            for proc in psutil.process_iter(["name"]):
+                if (proc.info.get("name") or "").lower() == "weixin.exe":
+                    return True
+            absent.append("psutil")
+        except Exception as exc:
+            errors.append("psutil: %r" % (exc,))
+        if errors and not absent:
+            import sys as _sys
+            _sys.stderr.write(
+                "[wechatauto] WeChatUIA.is_running(): 所有判据均失败，无法确定微信状态"
+                "（%s）；本次按 False 返回，但不要据此断定微信已退出\n"
+                % "；".join(errors))
+        return False
 
     def wake(self) -> None:
         """weixin:// 协议唤起/显示窗口（托盘态也能拉起）；失败则拉起 exe。"""
@@ -375,6 +501,64 @@ class WeChatUIA:
 
     @staticmethod
     def _rip_xrefs_to_rva(data: bytes, sections, target_rva: int) -> List[int]:
+        """可执行段里以 RIP 相对寻址引用 ``target_rva`` 的 LEA 指令 RVA。
+
+        匹配的是 ``[REX] 8D <modrm>``，modrm 满足 ``(b & 0xC7) == 0x05``
+        （mod=00、r/m=101 → RIP 相对），disp32 紧跟其后。
+
+        用 numpy 向量化而不是逐字节 Python 循环：Weixin.dll 有 198MB，老实现
+        扫一次 8 秒，在用户端看起来就是卡死（真有人在这一步按了停止）。两种
+        形态的判定式化简后是同一个 ``file_off + disp == 常数``，因为带 REX 时
+        指令起点前移一字节、长度却多一字节。
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            # numpy 随 opencv-python 一起来，正常装包不会走到这里；真缺了也
+            # 只是退回慢二十多倍的老实现，不能让 UIA 整条路因此消失。
+            return WeChatUIA._rip_xrefs_to_rva_ref(data, sections, target_rva)
+
+        a = np.frombuffer(data, dtype=np.uint8)
+        n = a.size
+        if n < 16:
+            return []
+        # 全局边界 p8d <= n-7：无 REX 形态最晚只能到 end-8，带 REX 的起点是
+        # p8d-1，最晚到 end-8 时 p8d == end-7；disp32 落在 p8d+2..p8d+5。
+        p8d = np.flatnonzero(a == 0x8D)
+        p8d = p8d[(p8d >= 1) & (p8d <= n - 7)]
+        if p8d.size == 0:
+            return []
+        modrm = np.zeros(256, dtype=bool)
+        modrm[[0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D]] = True
+        p8d = p8d[modrm[a[p8d + 1]]]
+        if p8d.size == 0:
+            return []
+        rex = (a[p8d - 1] >= 0x40) & (a[p8d - 1] <= 0x4F)
+        b = a[p8d[:, None] + np.arange(2, 6)].astype(np.int64)
+        disp = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16) | (b[:, 3] << 24)
+        disp -= (disp >= 0x80000000) << 32          # 无符号 32 位 → 有符号
+        total = p8d + disp
+
+        xrefs: List[int] = []
+        for sec in sections:
+            if not (sec["chars"] & IMAGE_SCN_MEM_EXECUTE):
+                continue
+            start = sec["raw_ptr"]
+            end = min(n, start + sec["raw_size"])
+            if end - start < 8:
+                continue
+            k = target_rva - sec["rva"] + start - 6
+            hit = total == k
+            plain = hit & (p8d >= start) & (p8d <= end - 8)
+            xrefs += (sec["rva"] + p8d[plain] - start).tolist()
+            with_rex = hit & rex & (p8d >= start + 1) & (p8d <= end - 7)
+            xrefs += (sec["rva"] + p8d[with_rex] - start - 1).tolist()
+        return xrefs
+
+    @staticmethod
+    def _rip_xrefs_to_rva_ref(data: bytes, sections, target_rva: int) -> List[int]:
+        """逐字节的慢实现（与 1.2.2.6 及更早版本同逻辑）：既是缺 numpy 时的
+        回退路径，也是自检里给向量化版对拍的参照。"""
         xrefs: List[int] = []
         for sec in sections:
             if not (sec["chars"] & IMAGE_SCN_MEM_EXECUTE):
@@ -402,16 +586,25 @@ class WeChatUIA:
 
         单一候选在版本升级后会漂移，因此返回候选序列：调用方逐个热写并用
         「mmui 树是否真的物化」判定，成功者记入 _VERIFIED_GATE_RVA。
+
+        结果按 DLL 身份落盘（含「扫过了，没有候选」这个负结果——不支持的版本
+        每次都重扫最浪费）。读不到文件/不是 PE 都返回空序列而不是 None：调用
+        方是直接迭代的。
         """
+        identity = _dll_identity(dll_path)
+        cached = _gate_cache().get(identity, {}).get("candidates")
+        if isinstance(cached, list):
+            return tuple(int(c) for c in cached)
+
         try:
             with open(dll_path, "rb") as f:
                 data = f.read()
         except OSError:
-            return None
+            return ()
 
         sections = WeChatUIA._pe_sections(data)
         if not sections:
-            return None
+            return ()
 
         core_off = data.find(QACCESSIBLE_CORE_STRING)
         core_rva = WeChatUIA._offset_to_rva(sections, core_off) if core_off >= 0 else None
@@ -442,13 +635,16 @@ class WeChatUIA:
             candidates.append((distance, target_rva))
 
         if not candidates:
+            _gate_cache_put(identity, candidates=[])
             return ()
         candidates.sort(key=lambda item: item[0])
         # 优先取与 qt.accessibility.core 同一代码岛（≤0x20000）的候选；
         # 一个都没有时退化为全部候选，交给热写校验兜底
         near = [rva for dist, rva in candidates if dist <= 0x20000]
         ordered = near or [rva for _dist, rva in candidates]
-        return tuple(dict.fromkeys(ordered))
+        result = tuple(dict.fromkeys(ordered))
+        _gate_cache_put(identity, candidates=list(result))
+        return result
 
     @staticmethod
     def _scan_qaccessible_active_rva(dll_path: str) -> Optional[int]:
@@ -460,9 +656,14 @@ class WeChatUIA:
     def _qaccessible_candidate_rvas(dll_path: str) -> List[int]:
         """gate RVA 候选序列：已验证缓存 > 特征扫描 > 版本兜底表。"""
         out: List[int] = []
-        cached = _VERIFIED_GATE_RVA.get(_dll_identity(dll_path))
-        if cached is not None:
-            out.append(int(cached))
+        identity = _dll_identity(dll_path)
+        verified = _VERIFIED_GATE_RVA.get(identity)
+        if verified is None:
+            disk = _gate_cache().get(identity, {}).get("verified")
+            if isinstance(disk, int):
+                _VERIFIED_GATE_RVA[identity] = verified = disk
+        if verified is not None:
+            out.append(int(verified))
         for rva in WeChatUIA._scan_qaccessible_candidates(dll_path):
             if int(rva) not in out:
                 out.append(int(rva))
@@ -573,7 +774,9 @@ class WeChatUIA:
                 if not verify:
                     return True
                 if self._mmui_present(hwnd):
-                    _VERIFIED_GATE_RVA[_dll_identity(dll_path)] = int(rva)
+                    identity = _dll_identity(dll_path)
+                    _VERIFIED_GATE_RVA[identity] = int(rva)
+                    _gate_cache_put(identity, verified=int(rva))
                     wxlog.info("UIA 树已物化，已记录 gate RVA：Weixin.dll+0x%x", rva)
                     return True
                 # 候选不对：恢复原值，继续试下一个
@@ -586,18 +789,39 @@ class WeChatUIA:
             kernel32.CloseHandle(handle)
 
     def _wake_accessibility(self) -> bool:
-        """确保 mmui 树物化：设系统读屏标志 + 逐窗口热写并校验（含候选重试）。"""
+        """确保 mmui 树物化：设系统读屏标志 + 逐窗口热写并校验（含候选重试）。
+
+        这里兜住异常：PE 扫描/热写任何一步出错都只该让「UIA 这条路这次不可用」，
+        调用方会自己回落 OCR/坐标。以前不兜，扫描里一个异常会一路冒出
+        ``ensure_window``，把 ``quick_send`` 整个打断（用户实测崩在 198MB DLL 的
+        扫描循环里）。KeyboardInterrupt 属于 BaseException，不在此列，照常中断。
+        """
         self._set_screen_reader_flag(True)
         ok = False
         for hwnd in self._wechat_hwnds():
-            ok = self._hot_activate_accessibility(hwnd) or ok
+            try:
+                ok = self._hot_activate_accessibility(hwnd) or ok
+            except Exception as e:
+                wxlog.warning("热激活 UIA 异常，本轮跳过（改用 OCR/坐标定位）：%s", e)
         if ok:
             self._win = None
             time.sleep(0.2)
         return ok
 
     # ------------------------------------------------------------------ 窗口定位
-    def _wechat_hwnds(self):
+    def _wechat_hwnds(self, diag: Optional[dict] = None):
+        """可见、标题像主窗的微信窗口，按面积从大到小。
+
+        只保留加载了 Weixin.dll 的主进程窗口，过滤掉无 DLL 的辅助进程窗口
+        （其热激活必然失败，只会产生噪音警告）。
+
+        ``diag`` 传一个 dict 时会填入扫描计数（``win32`` / ``matched`` / ``kept`` /
+        ``dropped_no_dll``），供「一个窗口都没留下」时给出能定位的警告——那正是
+        32 位解释器读不到 64 位进程模块的特征，静默返回空会被用户当成「控件树被屏蔽」。
+        """
+        if diag is not None:
+            diag.update({'win32': bool(_HAS_WIN32), 'matched': 0, 'kept': 0,
+                         'dropped_no_dll': 0})
         if not _HAS_WIN32:
             return []
         res = []
@@ -606,12 +830,16 @@ class WeChatUIA:
             try:
                 title = win32gui.GetWindowText(h)
                 if win32gui.IsWindowVisible(h) and _title_is_main(title):
-                    # 只保留加载了 Weixin.dll 的主进程窗口，过滤掉无 DLL 的
-                    # 辅助进程窗口（其热激活必然失败，只会产生噪音警告）
+                    if diag is not None:
+                        diag['matched'] += 1
                     pid = self._pid_from_hwnd(h)
                     if pid and self._weixin_dll_module(pid):
                         l, t, r, b = win32gui.GetWindowRect(h)
                         res.append(((r - l) * (b - t), h))
+                        if diag is not None:
+                            diag['kept'] += 1
+                    elif diag is not None:
+                        diag['dropped_no_dll'] += 1
             except Exception:
                 pass
             return True
@@ -621,6 +849,40 @@ class WeChatUIA:
             pass
         res.sort(reverse=True)
         return [h for _, h in res]
+
+    @staticmethod
+    def gate_block_hint(diag: dict, bits: Optional[int] = None) -> str:
+        """把「扫不到可用窗口」翻译成一句能定位的话（纯函数，便于离线自检）。"""
+        if bits is None:
+            bits = ctypes.sizeof(ctypes.c_void_p) * 8
+        matched = (diag or {}).get('matched', 0)
+        kept = (diag or {}).get('kept', 0)
+        if (diag or {}).get('win32', True) is False:
+            return ("pywin32 不可用，UIA 驱动整条路都用不了（安装：pip install pywin32）")
+        if matched == 0:
+            return ("没扫到可见的微信主窗口：微信未启动/未登录/最小化到托盘，"
+                    "或窗口标题不再包含「微信/Weixin」。UIA 这条路不会自己出现控件树。")
+        if kept == 0:
+            return ("扫到 %d 个微信窗口，但每个都定位不到 Weixin.dll 模块，热激活无从下手。"
+                    "当前解释器是 %d 位。%s"
+                    % (matched, bits,
+                       ("32 位 Python 无法枚举 64 位进程的模块（ERROR_PARTIAL_COPY），"
+                        "请改用 64 位 Python。" if bits == 32 else
+                        "64 位下还拿不到模块，通常是权限/完整性级别不一致"
+                        "（别用「以管理员身份运行」，让脚本与微信同级）"
+                        "或安全软件拦了模块枚举/进程读取——把 python 加入白名单再试。")))
+        return ""
+
+    def _warn_gate_blocked(self, diag: dict) -> None:
+        """同一种原因一个进程只说一次：长驻进程每次轮询都扫，刷屏比不说更糟。"""
+        hint = self.gate_block_hint(diag)
+        if not hint:
+            return
+        key = hint.split('。')[0][:40]
+        if key in _GATE_BLOCK_WARNED:
+            return
+        _GATE_BLOCK_WARNED.add(key)
+        wxlog.warning("控件树拿不到（本轮不会热激活 gate）：%s", hint)
 
     def _anchor(self, hwnd):
         try:
@@ -781,7 +1043,9 @@ class WeChatUIA:
         """
         if not force and self._find_main() is not None:
             return True
-        if not self._wechat_hwnds():
+        scan = {}
+        if not self._wechat_hwnds(scan):
+            self._warn_gate_blocked(scan)
             return False
         deadline = time.time() + max(1.0, timeout)
         while True:
@@ -814,6 +1078,11 @@ class WeChatUIA:
                 # 窗口在但树可能是 Qt 空壳：热写 gate 并校验（候选自动重试）
                 self.ensure_materialized(timeout=min(6.0, max(2.0, timeout / 2)))
             else:
+                # 走到这里说明连可用窗口都没扫到：以前是静默改走「读屏标志 + wake」，
+                # 用户只看到「没树」，看不出是没登录还是位数不对。
+                scan = {}
+                self._wechat_hwnds(scan)
+                self._warn_gate_blocked(scan)
                 self._set_screen_reader_flag(True)
                 self.wake()
             self._wait_main(timeout)
@@ -871,9 +1140,10 @@ class WeChatUIA:
 
     @staticmethod
     def _set_cursor(x: int, y: int) -> None:
+        """把光标走到目标点（轨迹与步数见 :mod:`wechatauto.rhythm`）。"""
         try:
             import ctypes
-            ctypes.windll.user32.SetCursorPos(int(x), int(y))
+            rhythm.move_to(ctypes.windll.user32, int(x), int(y))
         except Exception:
             pass
 
@@ -890,7 +1160,7 @@ class WeChatUIA:
         try:
             import ctypes
             ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # down
-            time.sleep(0.05)
+            rhythm.nap(0.05)
             ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)  # up
         except Exception:
             pass
@@ -900,13 +1170,114 @@ class WeChatUIA:
         try:
             import ctypes
             ctypes.windll.user32.mouse_event(0x0008, 0, 0, 0, 0)  # down
-            time.sleep(0.05)
+            rhythm.nap(0.05)
             ctypes.windll.user32.mouse_event(0x0010, 0, 0, 0, 0)  # up
         except Exception:
             pass
 
+    # ---------------------------------------------------------- 渲染层穿透
+    # 微信 4.x 的界面全画在 MMUIRenderSubWindowHW 上，该窗口带
+    # WS_EX_LAYERED|WS_EX_TRANSPARENT：mouse_event 的命中测试会跳过它，
+    # 点击落到后面的主窗口，界面上就是「点了没反应」。uiautomation 的
+    # Control.Click() 内部也是 mouse_event，所以同样打不中（实测：搜索下拉
+    # 结果点完界面纹丝不动）。guia 侧的 wx_click/wx_wheel 一直在处理这件事，
+    # UIA 驱动这边补齐——先临时摘掉鼠标所在那条窗口链的 WS_EX_TRANSPARENT。
+    GWL_EXSTYLE = -20
+    WS_EX_TRANSPARENT = 0x00000020
+
+    @staticmethod
+    def _win_chain(x: int, y: int) -> List[int]:
+        """(x,y) 这一点从最上层窗口开始、逐级向上的句柄列表。"""
+        try:
+            u = ctypes.windll.user32
+            cur = u.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+        except Exception:
+            return []
+        out = []
+        for _ in range(6):
+            if not cur:
+                break
+            out.append(int(cur))
+            cur = u.GetParent(cur)
+        return out
+
+    def _clear_transparent(self, x: int, y: int) -> List[Tuple[int, int]]:
+        """摘掉该点窗口链上的 WS_EX_TRANSPARENT，返回待还原的 (句柄, 原样式)。"""
+        u = ctypes.windll.user32
+        saved = []
+        for h in self._win_chain(x, y):
+            try:
+                ex = ctypes.c_long(u.GetWindowLongW(h, self.GWL_EXSTYLE)).value & 0xFFFFFFFF
+            except Exception:
+                continue
+            if ex & self.WS_EX_TRANSPARENT:
+                try:
+                    u.SetWindowLongW(h, self.GWL_EXSTYLE,
+                                     ex & ~self.WS_EX_TRANSPARENT)
+                    saved.append((h, ex))
+                except Exception:
+                    pass
+        if saved:
+            time.sleep(0.05)
+        return saved
+
+    def _restore_transparent(self, saved: List[Tuple[int, int]]) -> None:
+        u = ctypes.windll.user32
+        for h, ex in saved:
+            try:
+                u.SetWindowLongW(h, self.GWL_EXSTYLE, ex)
+            except Exception:
+                pass
+        if saved:
+            time.sleep(0.05)
+
+    def _click_at(self, x: int, y: int, right: bool = False) -> None:
+        self._set_cursor(x, y)
+        rhythm.nap(0.12)
+        saved = self._clear_transparent(x, y)
+        try:
+            if right:
+                self._right_click()
+            else:
+                self._left_click()
+        finally:
+            self._restore_transparent(saved)
+        rhythm.nap(0.2)
+
+    def _click_ctrl(self, ctrl, right: bool = False) -> bool:
+        """点一下控件矩形**内部的随机点**（走 _click_at，不吃 WS_EX_TRANSPARENT 的亏）。
+
+        故意不点正中：每次都命中同一个像素是脚本最明显的特征，而人手落在
+        控件内任意处。``rhythm.point`` 保证四边内缩后再取点。
+        """
+        try:
+            r = ctrl.BoundingRectangle
+        except Exception:
+            return False
+        if not r or r.width() <= 0 or r.height() <= 0:
+            return False
+        x, y = rhythm.point((r.left, r.top, r.right, r.bottom))
+        self._click_at(x, y, right=right)
+        return True
+
+    def _wheel_at(self, x: int, y: int, delta: int) -> None:
+        self._set_cursor(x, y)
+        rhythm.nap(0.1)
+        saved = self._clear_transparent(x, y)
+        try:
+            self._mouse_wheel(delta)
+        finally:
+            self._restore_transparent(saved)
+
     # ------------------------------------------------------------------ 控件定位
-    def _search_box(self, win):
+    @staticmethod
+    def _search_button(win):
+        """微信 4.1.15 起搜索入口**收起**成一个按钮：Name=「搜索」的 ButtonControl。"""
+        return _find_by(win, lambda c: (c.Name or "").strip() == SEARCH_EDIT_NAME
+                        and "Button" in c.ControlTypeName, max_depth=40)
+
+    def _search_box_present(self, win):
+        """搜索框已经展开时的定位（4.1.13 及以前它常驻）。"""
         # 1) 已知锚点（类名+名称 / 名称 / 类名），遍历候选类名
         for cls in SEARCH_EDIT_CLASSES:
             for kw in (dict(ClassName=cls, Name=SEARCH_EDIT_NAME),
@@ -918,6 +1289,26 @@ class WeChatUIA:
         # 2) 新旧版兜底：Name 含“搜索”的编辑框（忽略类名变化）
         return _find_by(win, lambda c: (c.ControlTypeName == "EditControl"
                                         and SEARCH_EDIT_NAME in (c.Name or "")))
+
+    def _search_box(self, win, expand: bool = False):
+        """定位搜索输入框。
+
+        ``expand=True`` 允许**点一下收起的搜索按钮**把它展开（4.1.15+ 静止状态下
+        树里没有输入框）。实测 ``Invoke()`` 是空操作、必须真点，所以这动作有副作用，
+        只有真要搜索时才传；``search_box_rect`` 那种只读锚点不传。
+        """
+        box = self._search_box_present(win)
+        if box is not None or not expand:
+            return box
+        btn = self._search_button(win)
+        if btn is None or not self._click_ctrl(btn):
+            return None
+        for _ in range(4):
+            time.sleep(0.3)
+            box = self._search_box_present(win)
+            if box is not None:
+                return box
+        return None
 
     def _chat_input(self, win=None):
         win = win or self._win
@@ -938,7 +1329,25 @@ class WeChatUIA:
 
     def current_chat(self) -> Optional[str]:
         e = self._chat_input()
-        return (e.Name or None) if e else None
+        return (_clean_chat_name(e.Name) if e else None)
+
+    def search_box_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        """搜索框的物理矩形 (left, top, right, bottom)，拿不到返回 None。
+
+        给 guia 的 OCR 兜底路径当点击锚点：那边的 ``SEARCH_BOX_RATIO`` 是按
+        窗高比例算的，窗口一改尺寸就飘（实测飘到聊天输入框里，搜索词被粘进
+        了别人的会话）。控件树里有精确矩形，没必要猜。
+        """
+        if self._win is None and not self.ensure_window():
+            return None
+        target = self._search_box(self._win) or self._search_button(self._win)
+        if target is None:
+            return None
+        try:
+            r = target.BoundingRectangle
+            return (r.left, r.top, r.right, r.bottom)
+        except Exception:
+            return None
 
     def _find_search_list(self, timeout: float = 3.0):
         deadline = time.time() + timeout
@@ -1026,6 +1435,94 @@ class WeChatUIA:
             pass
         return candidates
 
+    @staticmethod
+    def _chat_page_ready(win) -> bool:
+        """聊天页那一片「看得见」没有：会话列表或搜索框任一在树里就算看得见。
+
+        只认这两样，不认消息列表——窄窗口里开着会话时消息列表本来就在。
+        实测（主窗 848×1274、开着会话）：``session_list`` 与搜索框**整片不在树里**，
+        而导航栏 4 颗 tab 的 ``IsSelected``/``SelectionItemPattern`` 一个都读不出来，
+        所以判「有没有回到会话列表」只能靠这两样，不能靠 tab 的选中态。
+        """
+        if win is None:
+            return False
+        return (_find_by(win, lambda c: _aid_hit(getattr(c, "AutomationId", ""),
+                                                 SESSION_LIST_AIDS), max_depth=30)
+                is not None
+                or _find_by(win, lambda c: (c.ControlTypeName == "EditControl"
+                                            and SEARCH_EDIT_NAME in (c.Name or "")),
+                            max_depth=30) is not None)
+
+    def back_to_chat_tab(self, settle: float = 1.0, max_clicks: int = 2,
+                         require_list: bool = False) -> bool:
+        """点导航栏第一个 tab（「微信」栏），把主窗带回聊天页。
+
+        朋友圈相关接口（``WeChat.SwitchToMoments``）会把主窗留在朋友圈页，那里
+        会话列表和消息列表都不渲染，之后一切按搜索框/消息列表走的操作静默失败
+        （实测只剩一句 ``message_list is None``）。
+
+        这里**不按控件判页**（切到通讯录/收藏/发现以后，会话列表、消息列表、搜索框
+        照样报 ``offscreen=False``、rect 一个像素都不变，树读不出当前是哪一页），
+        但**要按「聊天页那一片有没有渲染出来」再决定点不点第二下**：窄窗口（实测
+        848px 宽）里开着会话时，点第一下「微信」只把主窗带回聊天页，**当前会话还开着**，
+        ``session_list`` 和搜索框仍然不在树里——用户实测要再点一次才退出会话。
+        只点一下的旧写法会让下一步的搜索框查找直接失败，看起来就是「会话打不开」。
+        所以改成：点一下 → 等 ``settle`` → 看聊天页那一片出来没有 → 没出来且还有额度
+        就再点一次。已经出来就**不再多点**（那一下会把用户正在看的会话切掉）。
+        ``require_list=True`` 时判据更严：只认 ``session_list``（调用方真的要会话列表，
+        而不只是搜索框）。tab 名匹配不上（改版/语言包）就按导航栏第一个 item 兜底，
+        顺序固定微信在最前。找不到 MainTabBar 返回 False，不抛。
+        """
+        if self._win is None and not self.ensure_window():
+            return False
+        bar = _find_by(self._win, lambda c: (c.ClassName or "") == MAIN_TAB_BAR_CLS,
+                       max_depth=20)
+        if bar is None:
+            wxlog.debug("未找到 %s，跳不回聊天页", MAIN_TAB_BAR_CLS)
+            return False
+        item = _find_by(bar, lambda c: (c.ClassName or "") == TAB_ITEM_CLS
+                        and (c.Name or "").strip() == CHAT_TAB_NAME, max_depth=6)
+        if item is None:
+            item = _find_by(bar, lambda c: (c.ClassName or "") == TAB_ITEM_CLS,
+                            max_depth=6)
+        if item is None:
+            wxlog.debug("%s 下没有 %s，跳不回聊天页", MAIN_TAB_BAR_CLS, TAB_ITEM_CLS)
+            return False
+
+        def _ready():
+            if not require_list:
+                return self._chat_page_ready(self._win)
+            w = self._find_main() or self._win
+            return _find_by(w, lambda c: _aid_hit(getattr(c, "AutomationId", ""),
+                                                  SESSION_LIST_AIDS),
+                            max_depth=30) is not None
+
+        if _ready():
+            # 会话列表/搜索框本来就在：一点都不用点。旧写法无条件先点一下，那一下
+            # 在窄窗口里正好把用户开着的会话切走。
+            wxlog.debug("聊天页那一片已经渲染，不点导航栏")
+            return True
+        # 走 _click_ctrl 而不是 Control.Click()：后者是裸 mouse_event，会被
+        # 渲染层的 WS_EX_TRANSPARENT 挡掉（见 _click_at 上方注释）。
+        for n in range(1, max(1, int(max_clicks)) + 1):
+            wxlog.debug("点导航栏「%s」栏第 %d 次，确保主窗回到聊天页/退出当前会话",
+                        CHAT_TAB_NAME, n)
+            if not self._click_ctrl(item):
+                return False
+            rhythm.nap(settle)
+            if _ready():
+                if n > 1:
+                    wxlog.info("点第 %d 次「%s」栏才退出会话（会话列表已渲染）",
+                               n, CHAT_TAB_NAME)
+                return True
+        # 点满还不算退出：窄窗口开着会话时搜索框不在树里，这一步不补点的话
+        # open_chat 的搜索框查找会直接失败，报出来的就是「会话打不开」。
+        wxlog.warning("点了 %d 次导航栏「%s」，会话列表和搜索框还是不在树里——"
+                      "主窗大概率还开着会话（窄窗口点一次退不出去），"
+                      "后面按搜索框/会话列表走的动作会失败",
+                      max(1, int(max_clicks)), CHAT_TAB_NAME)
+        return False
+
     def open_chat(self, keyword: str, index: Optional[int] = None,
                   section: Optional[str] = None, retries: int = 2) -> bool:
         """搜索并打开联系人/群聊，成功后校验输入框 Name。返回是否成功。
@@ -1035,8 +1532,13 @@ class WeChatUIA:
         """
         if not self.ensure_window():
             return False
+        # 搜索框只在聊天页渲染：主窗停在朋友圈页、或窄窗口里还开着会话时，搜索框
+        # 根本不在树里。这里先把界面带回聊天页（必要时点两次退出会话）。
+        if not self.back_to_chat_tab():
+            wxlog.warning("没能带回聊天页（窄窗口里会话可能还开着），"
+                          "下面这步找不到搜索框就会失败")
         win = self._win
-        box = self._search_box(win)
+        box = self._search_box(win, expand=True)
         if box is None:
             return False
 
@@ -1046,12 +1548,15 @@ class WeChatUIA:
         for kw in keywords:
             got = False
             for attempt in range(max(1, retries)):
-                self._paste_into(box, kw, clear=True)
-                time.sleep(0.8)
+                # 搜索框优先 SetValue：点击一旦没抢到焦点，Ctrl+V 就会把词打进
+                # 当时聚焦的别的控件里（实测落进过聊天输入框）。
+                if not self._set_text(box, kw):
+                    self._paste_into(box, kw, clear=True)
+                rhythm.nap(0.8)
                 got = self._collect_results(kw)
                 if got:
                     break
-                time.sleep(0.4)
+                rhythm.nap(0.4)
             if got:
                 results = got
                 used_kw = kw
@@ -1076,7 +1581,7 @@ class WeChatUIA:
                 results = exact
 
         chosen = results[0]
-        chosen["cell"].Click()
+        self._click_ctrl(chosen["cell"])
         time.sleep(0.7)
 
         name = self.current_chat()
@@ -1085,14 +1590,30 @@ class WeChatUIA:
         return False
 
     def send_text(self, text: str) -> bool:
-        """在已打开会话的输入框发送文本。返回是否成功。"""
+        """在已打开会话的输入框发送文本。返回是否成功。
+
+        回车之前先回读输入框内容比对（阈值 ``WxParam.SEND_CONTENT_RATIO``）：
+        Ctrl+V 有可能整个落空（焦点没落到输入框上），这时按键照样打下去，
+        发出去的会是空消息或上一轮残留的内容。判不达标就不回车并清空。
+        """
         if not self.ensure_window():
             return False
         e = self._chat_input()
         if e is None:
             return False
         self._paste_into(e, text, clear=True)
-        time.sleep(0.2)
+        rhythm.gate('send')
+        rhythm.nap(0.2)
+        ok, got, score = self._paste_landed(e, text)
+        if not ok:
+            wxlog.warning(
+                "内容未落进输入框（相似度 %.2f < 阈值 %.2f），不回车；读回=%r",
+                score, float(WxParam.SEND_CONTENT_RATIO), (got or "")[:80])
+            try:
+                e.SendKeys("{Ctrl}a{Delete}", waitTime=0.05)
+            except Exception:
+                pass
+            return False
         try:
             e.SendKeys("{Enter}", waitTime=0.05)
         except Exception:
@@ -1136,9 +1657,10 @@ class WeChatUIA:
             time.sleep(0.5)
         if not btn or not btn.Exists(0):
             return False
+        rhythm.gate('call')
         try:
-            btn.Click()
-            time.sleep(0.8)
+            self._click_ctrl(btn)
+            rhythm.nap(0.8)
         except Exception:
             return False
         # 菜单里选择 语音/视频 通话项
@@ -1147,7 +1669,7 @@ class WeChatUIA:
             try:
                 item = win.MenuItemControl(AutomationId="XMenuItem", Name=target_name)
                 if item.Exists(0.5, 0.2):
-                    item.Click()
+                    self._click_ctrl(item)
                     time.sleep(0.5)
                     return True
             except Exception:
@@ -1222,30 +1744,31 @@ class WeChatUIA:
         except Exception:
             return False
         # 头像位于消息行最左侧约 40-50px 处
-        ax = r.left + 70
-        ay = (r.top + r.bottom) // 2
+        ax = int(r.left + rhythm.spread(62, 80))
+        ay = int(rhythm.spread(r.top + r.height() * 0.35,
+                               r.top + r.height() * 0.65))
         try:
             from wechatauto.guia import ScreenOCR
             import PIL.ImageGrab as IG
         except Exception:
             return False
+        rhythm.gate('poke')
         for attempt in range(2):
             self._set_cursor(ax, ay)
-            time.sleep(0.2)
+            rhythm.nap(0.2)
             self._right_click()
-            time.sleep(1.0)
+            rhythm.nap(1.0)
             img = IG.grab()
             res = ScreenOCR.recognize(img)
             for text, x, y, w, h in res:
                 t = (text or "").replace(" ", "")
                 if "拍一拍" in t or t == "拍一" or t.startswith("拍一"):
-                    # 点击该文字中心
-                    cx = x + w // 2
-                    cy = y + h // 2
+                    # 点在该菜单项矩形内部的一个随机点
+                    cx, cy = rhythm.point((x, y, x + w, y + h))
                     self._set_cursor(cx, cy)
-                    time.sleep(0.2)
+                    rhythm.nap(0.2)
                     self._left_click()
-                    time.sleep(0.5)
+                    rhythm.nap(0.5)
                     return True
         return False
 
@@ -1280,7 +1803,7 @@ class WeChatUIA:
         # 最新消息在可视区底部（消息列表打开即定位在最新），取 bottom 最大者
         target = max(candidates, key=lambda t: t[1].bottom)
         ch, r = target
-        # 消息行内取内容重心 x（self 靠右、friend 靠左），y 取行垂直中心
+        # 消息行内取内容重心 x（self 靠右、friend 靠左），y 在行的中段随机取
         try:
             from PIL import ImageGrab as IG
             img = IG.grab(bbox=(r.left, r.top, r.right, r.bottom))
@@ -1296,11 +1819,12 @@ class WeChatUIA:
                 cx = (r.left + r.right) // 2
         except Exception:
             cx = (r.left + r.right) // 2
-        cy = (r.top + r.bottom) // 2
+        cy = int(rhythm.spread(r.top + r.height() * 0.35,
+                               r.top + r.height() * 0.65))
         self._set_cursor(cx, cy)
-        time.sleep(0.2)
+        rhythm.nap(0.2)
         self._right_click()
-        time.sleep(1.0)
+        rhythm.nap(1.0)
         return (cx, cy)
 
     def _uia_find_menu_item(self, name_sub: str, max_depth: int = 6):
@@ -1350,12 +1874,11 @@ class WeChatUIA:
                 continue
         try:
             r = ctrl.BoundingRectangle
-            cx = (r.left + r.right) // 2
-            cy = (r.top + r.bottom) // 2
+            cx, cy = rhythm.point((r.left, r.top, r.right, r.bottom))
             self._set_cursor(cx, cy)
-            time.sleep(0.2)
+            rhythm.nap(0.2)
             self._left_click()
-            time.sleep(0.3)
+            rhythm.nap(0.3)
             return True
         except Exception:
             return False
@@ -1368,6 +1891,7 @@ class WeChatUIA:
         超过 2 分钟撤回时限）则返回失败。UIA 不可用/未命中时降级到 OCR
         （全屏识别「撤回」文字定位点击）。两者都失败返回 False。
         """
+        rhythm.gate('recall')
         pos = self._right_click_latest_row(who)
         if pos is None:
             return False
@@ -1386,27 +1910,44 @@ class WeChatUIA:
             if attempt > 0:
                 cx, cy = pos
                 self._set_cursor(cx, cy)
-                time.sleep(0.2)
+                rhythm.nap(0.2)
                 self._right_click()
-                time.sleep(1.0)
+                rhythm.nap(1.0)
             img = IG.grab()
             res = ScreenOCR.recognize(img)
             for text, x, y, w, h in res:
                 t = (text or "").replace(" ", "")
                 if "撤回" in t or t == "撤回":
-                    cxx = x + w // 2
-                    cyy = y + h // 2
+                    cxx, cyy = rhythm.point((x, y, x + w, y + h))
                     self._set_cursor(cxx, cyy)
-                    time.sleep(0.2)
+                    rhythm.nap(0.2)
                     self._left_click()
-                    time.sleep(0.5)
+                    rhythm.nap(0.5)
                     return True
         return False
 
     # ------------------------------------------------------------------ 剪贴板粘贴
-    def _paste_into(self, ctrl, text: str, clear: bool = True) -> None:
-        ctrl.Click()
+    def _set_text(self, ctrl, text: str) -> bool:
+        """用 UIA ValuePattern 直接写文本：不动鼠标、不发按键，返回是否写成。
+
+        只给搜索框这类「填完就等它自己出结果」的控件用。聊天输入框不走这条
+        （见 :meth:`_paste_into`）：SetValue 不会让 Qt 控件获得焦点，而发送靠
+        的是回车键落到那个焦点上。
+        """
+        try:
+            vp = ctrl.GetValuePattern()
+            if vp is None or vp.IsReadOnly:
+                return False
+            vp.SetValue(text or "")
+        except Exception:
+            return False
         time.sleep(0.1)
+        return True
+
+    def _paste_into(self, ctrl, text: str, clear: bool = True) -> None:
+        """点击控件拿焦点，再走剪贴板 Ctrl+V（发送类输入框用这条）。"""
+        self._click_ctrl(ctrl)
+        rhythm.nap(0.1)
         if clear:
             try:
                 ctrl.SendKeys("{Ctrl}a{Delete}", waitTime=0.05)
@@ -1415,8 +1956,62 @@ class WeChatUIA:
         self._clip_set(text)
         try:
             ctrl.SendKeys("{Ctrl}v", waitTime=0.05)
+        except Exception as e:
+            # 落不进去时由 send_text 的回读校验拦下回车，这里不静默当作成功。
+            wxlog.debug("Ctrl+V 投递异常：%s", e)
+
+    @staticmethod
+    def _read_edit_value(ctrl) -> Optional[str]:
+        """读输入框当前内容；控件不暴露值时返回 None（表示"读不到"，不是"空"）。
+
+        本依赖版本的 ``Control`` 没有 ``GetValue()``，只能走 pattern：
+        ``ValuePattern`` 优先，``LegacyIAccessiblePattern`` 兜底。
+        """
+        try:
+            vp = ctrl.GetValuePattern()
+            if vp is not None:
+                return vp.Value
         except Exception:
             pass
+        try:
+            ap = ctrl.GetLegacyIAccessiblePattern()
+            if ap is not None:
+                return ap.Value
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _compare_norm(text: str) -> str:
+        """比对用归一化：折叠空白，并把表情码折算成输入框里的占位符。
+
+        实测（微信 4.1.15.13 / ``mmui::ChatInputField``）：传入的 ``[微笑]`` 在
+        输入框里是 1 个 U+FFFC 对象替换符，整串表情码不在了。两侧都折算才能对上，
+        否则「好的[微笑]」只有 0.444，会被阈值误拦。大小写、全半角、标点的
+        差异不作废——那些是真差异。
+        """
+        return _STICKER_CODE.sub("￼", "".join((text or "").split()))
+
+    @classmethod
+    def _paste_landed(cls, ctrl, text: str) -> Tuple[bool, str, float]:
+        """回读输入框并与待发内容比相似度。返回 (是否达标, 读回值, 相似度)。
+
+        读不回值时判达标 —— 没有探测能力不等于内容错了。若把"读不到"当失败，
+        控件改版哪天不暴露 ValuePattern 了，发送功能会全线锁死。
+        """
+        need = float(getattr(WxParam, "SEND_CONTENT_RATIO", 0.6) or 0)
+        if need <= 0:
+            return True, "", 1.0
+        got = cls._read_edit_value(ctrl)
+        if got is None:
+            wxlog.debug("输入框不暴露内容，跳过发送前回读校验")
+            return True, "", 1.0
+        want = cls._compare_norm(text)
+        have = cls._compare_norm(got)
+        if not want:
+            return True, got, 1.0
+        score = difflib.SequenceMatcher(None, want, have, autojunk=False).ratio()
+        return score >= need, got, score
 
     # ------------------------------------------------------------------ 消息列表定位
     def _message_list(self, win=None):
