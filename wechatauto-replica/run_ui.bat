@@ -1,15 +1,13 @@
 @echo off
-chcp 65001 >nul
-title WeChat-AIAgent 微信AI自动回复控制台
+setlocal
+title WeChat-AIAgent Launcher
 
 cd /d "%~dp0"
 if exist "wechatauto-replica\gui_app.py" cd /d "%~dp0wechatauto-replica"
 
-REM Environment isolation
 set "PYTHONUNBUFFERED=1"
 set "PYTHONIOENCODING=utf-8"
 
-REM 彻底将所有 AI 模型与缓存路径重定向至本项目 models 目录 (坚决不占用 C 盘空间)
 set "PROJECT_MODELS=%CD%\models"
 if not exist "%PROJECT_MODELS%" if exist "%~dp0wechatauto-replica\models" set "PROJECT_MODELS=%~dp0wechatauto-replica\models"
 if not exist "%PROJECT_MODELS%" if exist "%~dp0models" set "PROJECT_MODELS=%~dp0models"
@@ -23,123 +21,114 @@ set "PYTHON_EXE="
 set "VENV_ACTIVATE="
 set "ENV_DESC="
 
-REM ===============================================================
-REM 1. 优先检查本项目虚拟环境 (venv / .venv)
-REM ===============================================================
+rem ===============================================================
+rem 1. Check local virtualenv (venv / .venv)
+rem ===============================================================
 
-REM 1.1 当前目录下 venv
-if exist "venv\Scripts\python.exe" (
-    "venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\venv\Scripts\python.exe"
-        set "VENV_ACTIVATE=%CD%\venv\Scripts\activate.bat"
-        set "ENV_DESC=本项目虚拟环境 [venv]"
-        goto :FOUND_PYTHON
-    )
-)
+if not exist "venv\Scripts\python.exe" goto :CHECK_DOT_VENV
+"venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_DOT_VENV
+set "PYTHON_EXE=%CD%\venv\Scripts\python.exe"
+set "VENV_ACTIVATE=%CD%\venv\Scripts\activate.bat"
+set "ENV_DESC=Virtualenv [venv]"
+goto :FOUND_PYTHON
 
-REM 1.2 当前目录下 .venv
-if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
-        set "VENV_ACTIVATE=%CD%\.venv\Scripts\activate.bat"
-        set "ENV_DESC=本项目虚拟环境 [.venv]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_DOT_VENV
+if not exist ".venv\Scripts\python.exe" goto :CHECK_PARENT_VENV
+".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_PARENT_VENV
+set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
+set "VENV_ACTIVATE=%CD%\.venv\Scripts\activate.bat"
+set "ENV_DESC=Virtualenv [.venv]"
+goto :FOUND_PYTHON
 
-REM 1.3 父目录下 venv
-if exist "..\venv\Scripts\python.exe" (
-    "..\venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\..\venv\Scripts\python.exe"
-        set "VENV_ACTIVATE=%CD%\..\venv\Scripts\activate.bat"
-        set "ENV_DESC=本项目根目录虚拟环境 [..\venv]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_PARENT_VENV
+if not exist "..\venv\Scripts\python.exe" goto :CHECK_PARENT_DOT_VENV
+"..\venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_PARENT_DOT_VENV
+set "PYTHON_EXE=%CD%\..\venv\Scripts\python.exe"
+set "VENV_ACTIVATE=%CD%\..\venv\Scripts\activate.bat"
+set "ENV_DESC=Root Virtualenv [..\venv]"
+goto :FOUND_PYTHON
 
-REM 1.4 父目录下 .venv
-if exist "..\.venv\Scripts\python.exe" (
-    "..\.venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\..\.venv\Scripts\python.exe"
-        set "VENV_ACTIVATE=%CD%\..\.venv\Scripts\activate.bat"
-        set "ENV_DESC=本项目根目录虚拟环境 [..\.venv]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_PARENT_DOT_VENV
+if not exist "..\.venv\Scripts\python.exe" goto :CHECK_RUNTIME
+"..\.venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_RUNTIME
+set "PYTHON_EXE=%CD%\..\.venv\Scripts\python.exe"
+set "VENV_ACTIVATE=%CD%\..\.venv\Scripts\activate.bat"
+set "ENV_DESC=Root Virtualenv [..\.venv]"
+goto :FOUND_PYTHON
 
-REM ===============================================================
-REM 2. 检查本项目内置绿色便携运行环境 (runtime)
-REM ===============================================================
+rem ===============================================================
+rem 2. Check portable runtime (runtime)
+rem ===============================================================
 
-if exist "runtime\python.exe" (
-    "runtime\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\runtime\python.exe"
-        set "PATH=%CD%\runtime;%CD%\runtime\Scripts;%PATH%"
-        set "ENV_DESC=本项目内置便携运行时 [runtime]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_RUNTIME
+if not exist "runtime\python.exe" goto :CHECK_PARENT_RUNTIME
+"runtime\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_PARENT_RUNTIME
+set "PYTHON_EXE=%CD%\runtime\python.exe"
+set "PATH=%CD%\runtime;%CD%\runtime\Scripts;%PATH%"
+set "ENV_DESC=Portable Runtime [runtime]"
+goto :FOUND_PYTHON
 
-if exist "..\runtime\python.exe" (
-    "..\runtime\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\..\runtime\python.exe"
-        set "PATH=%CD%\..\runtime;%CD%\..\runtime\Scripts;%PATH%"
-        set "ENV_DESC=本项目根目录便携运行时 [..\runtime]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_PARENT_RUNTIME
+if not exist "..\runtime\python.exe" goto :CHECK_REPLICA_RUNTIME
+"..\runtime\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :CHECK_REPLICA_RUNTIME
+set "PYTHON_EXE=%CD%\..\runtime\python.exe"
+set "PATH=%CD%\..\runtime;%CD%\..\runtime\Scripts;%PATH%"
+set "ENV_DESC=Root Portable Runtime [..\runtime]"
+goto :FOUND_PYTHON
 
-if exist "wechatauto-replica\runtime\python.exe" (
-    "wechatauto-replica\runtime\python.exe" -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_EXE=%CD%\wechatauto-replica\runtime\python.exe"
-        set "PATH=%CD%\wechatauto-replica\runtime;%CD%\wechatauto-replica\runtime\Scripts;%PATH%"
-        set "ENV_DESC=本项目便携运行时 [wechatauto-replica\runtime]"
-        goto :FOUND_PYTHON
-    )
-)
+:CHECK_REPLICA_RUNTIME
+if not exist "wechatauto-replica\runtime\python.exe" goto :NOT_FOUND
+"wechatauto-replica\runtime\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :NOT_FOUND
+set "PYTHON_EXE=%CD%\wechatauto-replica\runtime\python.exe"
+set "PATH=%CD%\wechatauto-replica\runtime;%CD%\wechatauto-replica\runtime\Scripts;%PATH%"
+set "ENV_DESC=Replica Portable Runtime [wechatauto-replica\runtime]"
+goto :FOUND_PYTHON
 
-REM ===============================================================
-REM 3. 严格拦截：未找到本项目虚拟环境或内置运行时，严禁静默调用系统 Python
-REM ===============================================================
+rem ===============================================================
+rem 3. Environment not found
+rem ===============================================================
+
+:NOT_FOUND
 echo ===============================================================
-echo [错误] 未检测到本项目可用的专属虚拟环境 (venv/.venv) 或内置运行时！
+echo [ERROR] No Python virtual environment or runtime found!
+echo [错误] 未检测到本项目专属的虚拟环境 (venv/.venv) 或内置运行时！
 echo ===============================================================
 echo.
-echo 本程序严格要求必须在【本项目专属的虚拟环境】下运行，
-echo 严禁直接调用全局系统 Python，以避免缺少依赖或全局环境冲突导致崩溃。
+echo Please run setup_env.bat to initialize environment:
+echo 请双击运行项目根目录下的 setup_env.bat 自动配置虚拟环境并安装依赖。
 echo.
-echo 【解决方案】：
-echo   1. 运行项目根目录下的 setup_env.bat 自动为本项目创建虚拟环境并安装依赖；
-echo   2. 或者在终端手动为本项目创建虚拟环境并激活安装依赖：
-echo      python -m venv venv
-echo      venv\Scripts\pip install -r requirements.txt
+echo Or manually create virtualenv:
+echo 或在命令行手动创建：
+echo   python -m venv venv
+echo   venv\Scripts\pip install -r requirements.txt
 echo.
 echo ===============================================================
 pause
 exit /b 1
 
+rem ===============================================================
+rem 4. Launch Application
+rem ===============================================================
+
 :FOUND_PYTHON
-REM 若有虚拟环境激活脚本，执行激活
-if not "%VENV_ACTIVATE%"=="" if exist "%VENV_ACTIVATE%" (
-    call "%VENV_ACTIVATE%"
-)
+if not "%VENV_ACTIVATE%"=="" if exist "%VENV_ACTIVATE%" call "%VENV_ACTIVATE%"
 
 echo ===============================================================
-echo      WeChat-AIAgent 启动中...
+echo      WeChat-AIAgent 启动中 / Launching...
 echo ===============================================================
 echo.
-echo [环境模式] %ENV_DESC%
-echo [Python解释器] %PYTHON_EXE%
-echo [工作目录] %CD%
-echo [启动目标] gui_app.py (原生桌面 GUI)
+echo [Environment] %ENV_DESC%
+echo [Python Path] %PYTHON_EXE%
+echo [Working Dir] %CD%
 echo.
+echo 正在启动客户端图形界面 (Tkinter GUI)...
 echo 提示：如需退出程序，请直接关闭窗口或在此控制台按 Ctrl+C。
 echo ===============================================================
 echo.

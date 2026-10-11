@@ -1,0 +1,6 @@
+# Auto-detect text files and perform LF normalization in repo
+* text=auto
+
+# Windows batch files MUST always use CRLF line endings on checkout
+*.bat text eol=crlf
+*.cmd text eol=crlf
