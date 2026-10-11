@@ -30,7 +30,7 @@ if not exist "venv\Scripts\python.exe" goto :CHECK_DOT_VENV
 if errorlevel 1 goto :CHECK_DOT_VENV
 set "PYTHON_EXE=%CD%\venv\Scripts\python.exe"
 set "VENV_ACTIVATE=%CD%\venv\Scripts\activate.bat"
-set "ENV_DESC=Virtualenv [venv]"
+set "ENV_DESC=Project Virtualenv [venv]"
 goto :FOUND_PYTHON
 
 :CHECK_DOT_VENV
@@ -39,7 +39,7 @@ if not exist ".venv\Scripts\python.exe" goto :CHECK_PARENT_VENV
 if errorlevel 1 goto :CHECK_PARENT_VENV
 set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
 set "VENV_ACTIVATE=%CD%\.venv\Scripts\activate.bat"
-set "ENV_DESC=Virtualenv [.venv]"
+set "ENV_DESC=Project Virtualenv [.venv]"
 goto :FOUND_PYTHON
 
 :CHECK_PARENT_VENV
@@ -98,14 +98,12 @@ rem ===============================================================
 :NOT_FOUND
 echo ===============================================================
 echo [ERROR] No Python virtual environment or runtime found!
-echo [错误] 未检测到本项目专属的虚拟环境 (venv/.venv) 或内置运行时！
 echo ===============================================================
 echo.
-echo Please run setup_env.bat to initialize environment:
-echo 请双击运行项目根目录下的 setup_env.bat 自动配置虚拟环境并安装依赖。
+echo Please run setup_env.bat first to configure environment:
+echo   setup_env.bat
 echo.
-echo Or manually create virtualenv:
-echo 或在命令行手动创建：
+echo Or create virtualenv manually:
 echo   python -m venv venv
 echo   venv\Scripts\pip install -r requirements.txt
 echo.
@@ -121,15 +119,11 @@ rem ===============================================================
 if not "%VENV_ACTIVATE%"=="" if exist "%VENV_ACTIVATE%" call "%VENV_ACTIVATE%"
 
 echo ===============================================================
-echo      WeChat-AIAgent 启动中 / Launching...
+echo      WeChat-AIAgent Launcher
 echo ===============================================================
-echo.
 echo [Environment] %ENV_DESC%
 echo [Python Path] %PYTHON_EXE%
 echo [Working Dir] %CD%
-echo.
-echo 正在启动客户端图形界面 (Tkinter GUI)...
-echo 提示：如需退出程序，请直接关闭窗口或在此控制台按 Ctrl+C。
 echo ===============================================================
 echo.
 
@@ -138,8 +132,8 @@ echo.
 if errorlevel 1 (
     echo.
     echo ===============================================================
-    echo [提示] 程序已退出 (退出码: %errorlevel%)
-    echo 如遇问题，请查看 logs 目录下的日志文件或控制台输出。
+    echo [ERROR] Application exited with code: %errorlevel%
+    echo Please check console logs or logs directory for details.
     echo ===============================================================
     pause
 )

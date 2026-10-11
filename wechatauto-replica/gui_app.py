@@ -5867,6 +5867,10 @@ class WeChatAIAgentApp:
 
 def main():
     try:
+        print("  * 微信 4.x 桌面客户端 AI 助手图形界面启动成功 (Tkinter GUI)")
+        print("  * 提示: 如需退出程序，请直接关闭主窗口或在控制台按 Ctrl+C")
+        print("---------------------------------------------------------------\n")
+
         root = tk.Tk()
         app = WeChatAIAgentApp(root)
         root.mainloop()
