@@ -259,6 +259,114 @@ class VoiceRecognizer:
         except Exception as e:
             return False, f"云端 ASR 请求失败: {e}"
 
+    def transcribe_qwen_audio(self, wav_path: str, language: str = "zh") -> Tuple[bool, str]:
+        """使用阿里通义 Qwen2.5-Omni / Qwen2-Audio 执行多模态音频理解与精准转写
+        
+        支持 DashScope 官方兼容端点或本地 vLLM/OpenAI 兼容多模态接口 (带音频 base64 Data-URI)
+        """
+        api_url = (getattr(self.config, "qwen_audio_api_url", "") or "").strip().rstrip("/")
+        if not api_url:
+            # 默认优先尝试全局大模型 URL，或 DashScope 兼容端点
+            global_llm_url = os.environ.get("OPENAI_BASE_URL", "")
+            if "dashscope" in global_llm_url:
+                api_url = global_llm_url.rstrip("/")
+            else:
+                api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        
+        endpoint = f"{api_url}/chat/completions"
+        api_key = (getattr(self.config, "qwen_audio_api_key", "") or "").strip()
+        if not api_key:
+            # 自动继承系统环境变量或全局大模型 API Key
+            api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+
+        model_name = (getattr(self.config, "qwen_audio_model", "") or "qwen-audio-turbo").strip()
+
+        try:
+            with open(wav_path, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            return False, f"读取音频文件失败: {e}"
+
+        audio_data_uri = f"data:audio/wav;base64,{audio_b64}"
+
+        prompt = "请转写这段音频中的讲话内容。请仅输出清晰的文字转写结果，不要输出任何多余的解释、标点解说或前后缀。"
+        if language and language != "zh":
+            prompt = f"Please transcribe the speech in this audio in {language}. Output only the transcript text without any explanation."
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": audio_b64,
+                                "format": "wav"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+        }
+
+        # 尝试标准 OpenAI input_audio 格式；若失败可平滑兼容 audio_url 格式
+        json_data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}" if api_key else "",
+        }
+
+        try:
+            req = urllib.request.Request(endpoint, data=json_data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=35) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                choices = res.get("choices", [])
+                if choices and "message" in choices[0]:
+                    content = choices[0]["message"].get("content", "")
+                    if isinstance(content, list):
+                        # 处理结构化内容
+                        text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                        content = "".join(text_parts)
+                    return True, str(content).strip()
+                return False, "Qwen-Audio 返回内容为空"
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8", errors="ignore")
+            # 兼容尝试：部分模型接受 audio_url 格式
+            try:
+                alt_payload = {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "audio_url",
+                                    "audio_url": {"url": audio_data_uri}
+                                },
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ]
+                }
+                req2 = urllib.request.Request(endpoint, data=json.dumps(alt_payload).encode("utf-8"), headers=headers, method="POST")
+                with urllib.request.urlopen(req2, timeout=35) as resp2:
+                    res2 = json.loads(resp2.read().decode("utf-8"))
+                    choices = res2.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        return True, choices[0]["message"].get("content", "").strip()
+            except Exception:
+                pass
+            return False, f"Qwen-Audio HTTP 错误 [{e.code}]: {err_msg[:200]}"
+        except Exception as e:
+            return False, f"Qwen-Audio 请求失败: {e}"
+
     def transcribe(self, audio_path: str, language: str = "zh") -> Tuple[bool, str, str]:
         """统一音频转写入口 (支持 .silk, .wav, .mp3 等)
         
@@ -277,7 +385,16 @@ class VoiceRecognizer:
                 wav_to_clean = wav_path
 
             engine = (self.config.engine or "local").strip().lower()
-            if engine == "cloud":
+            if engine in ("qwen_audio", "qwen", "qwen_omni"):
+                ok, text = self.transcribe_qwen_audio(wav_path, language=language)
+                if ok:
+                    return ok, text, "qwen_audio"
+                # Qwen-Audio 调用异常时无缝保底降级为本地 faster-whisper
+                ok_local, text_local = self.transcribe_local(wav_path, language=language)
+                if ok_local:
+                    return True, text_local, "faster-whisper(降级保底)"
+                return False, f"Qwen-Audio 识别失败且降级失败: {text}", "qwen_audio"
+            elif engine == "cloud":
                 ok, text = self.transcribe_cloud(wav_path, language=language)
                 return ok, text, "cloud"
             else:

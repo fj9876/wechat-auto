@@ -175,25 +175,77 @@ class VoIPTabBuilder:
         self.var_whitelist_groups = tk.StringVar(value=", ".join(self.config.voip.whitelist_groups))
         ttk.Entry(grp_frame, textvariable=self.var_whitelist_groups, width=45).pack(side="left", padx=8)
 
-        # 参数配置小栏
+        # 参数配置小栏 (行 1: 基础来电延迟与打断；行 2: 思考垫音与全双工倾听应答)
         param_bar = tk.Frame(card_targets, bg=self.app.COLOR_CARD)
-        param_bar.pack(fill="x", padx=16, pady=(4, 10))
+        param_bar.pack(fill="x", padx=16, pady=(4, 6))
 
         tk.Label(param_bar, text="来电接听延迟 (秒):", bg=self.app.COLOR_CARD).grid(row=0, column=0, sticky="w")
         self.var_answer_delay = tk.DoubleVar(value=self.config.voip.auto_answer_delay_sec)
-        ttk.Entry(param_bar, textvariable=self.var_answer_delay, width=6).grid(row=0, column=1, sticky="w", padx=(4, 16))
+        ttk.Entry(param_bar, textvariable=self.var_answer_delay, width=5).grid(row=0, column=1, sticky="w", padx=(4, 12))
 
-        tk.Label(param_bar, text="单次通话最大时长 (分钟):", bg=self.app.COLOR_CARD).grid(row=0, column=2, sticky="w")
+        tk.Label(param_bar, text="通话保护最大时长 (分):", bg=self.app.COLOR_CARD).grid(row=0, column=2, sticky="w")
         self.var_max_duration = tk.IntVar(value=self.config.voip.max_call_duration_min)
-        ttk.Entry(param_bar, textvariable=self.var_max_duration, width=6).grid(row=0, column=3, sticky="w", padx=(4, 16))
+        ttk.Entry(param_bar, textvariable=self.var_max_duration, width=5).grid(row=0, column=3, sticky="w", padx=(4, 12))
 
         self.var_barge_in = tk.BooleanVar(value=self.config.voip.barge_in_enabled)
-        chk_barge = tk.Checkbutton(param_bar, text="全双工智能打断 (对方插话瞬间停音)", variable=self.var_barge_in, bg=self.app.COLOR_CARD)
+        chk_barge = tk.Checkbutton(param_bar, text="全双工智能打断 (插话停音)", variable=self.var_barge_in, bg=self.app.COLOR_CARD)
         chk_barge.grid(row=0, column=4, sticky="w")
 
         self.var_echo_cancel = tk.BooleanVar(value=getattr(self.config.voip, "echo_cancellation_enabled", True))
-        chk_echo = tk.Checkbutton(param_bar, text="AI自发音回声智能过滤 (防扬声器串音误判)", variable=self.var_echo_cancel, bg=self.app.COLOR_CARD, fg=self.app.COLOR_PRIMARY)
-        chk_echo.grid(row=0, column=5, sticky="w", padx=(12, 0))
+        chk_echo = tk.Checkbutton(param_bar, text="AI自发音回声智能过滤", variable=self.var_echo_cancel, bg=self.app.COLOR_CARD, fg=self.app.COLOR_PRIMARY)
+        chk_echo.grid(row=0, column=5, sticky="w", padx=(8, 0))
+
+        # 参数配置小栏 (行 2: 借鉴 Nemotron 优化的思考垫音与倾听应答)
+        self.var_on_hold_fillers = tk.BooleanVar(value=getattr(self.config.voip, "enable_on_hold_fillers", True))
+        chk_on_hold = tk.Checkbutton(param_bar, text="💡 思考口语垫音 (消除死寂冷场)", variable=self.var_on_hold_fillers, bg=self.app.COLOR_CARD, fg="#0284c7")
+        chk_on_hold.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        tk.Label(param_bar, text="超时(秒):", bg=self.app.COLOR_CARD).grid(row=1, column=2, sticky="e", pady=(4, 0))
+        self.var_on_hold_timeout = tk.DoubleVar(value=getattr(self.config.voip, "on_hold_timeout_sec", 1.0))
+        ttk.Entry(param_bar, textvariable=self.var_on_hold_timeout, width=5).grid(row=1, column=3, sticky="w", padx=(4, 12), pady=(4, 0))
+
+        self.var_enable_backchannel = tk.BooleanVar(value=getattr(self.config.voip, "enable_backchannel", True))
+        chk_backchannel = tk.Checkbutton(param_bar, text="🎙️ 全双工倾听应答 ('嗯/对')", variable=self.var_enable_backchannel, bg=self.app.COLOR_CARD, fg="#059669")
+        chk_backchannel.grid(row=1, column=4, sticky="w", pady=(4, 0))
+
+        tk.Label(param_bar, text="长语音门限(秒):", bg=self.app.COLOR_CARD).grid(row=1, column=5, sticky="w", pady=(4, 0))
+        self.var_backchannel_sec = tk.DoubleVar(value=getattr(self.config.voip, "backchannel_min_speech_sec", 4.5))
+        ttk.Entry(param_bar, textvariable=self.var_backchannel_sec, width=5).grid(row=1, column=5, sticky="e", pady=(4, 0))
+
+        # 全双工架构模式选择栏
+        duplex_row = tk.Frame(card_targets, bg=self.app.COLOR_CARD)
+        duplex_row.pack(fill="x", padx=16, pady=(4, 10))
+
+        tk.Label(duplex_row, text="🌐 全双工架构:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
+        curr_mode = getattr(self.config.voip, "full_duplex_mode", "cascade")
+        init_mode = "本地极速级联模式 (FunASR/Whisper + LLM + TTS)" if curr_mode == "cascade" else "云端全双工实时流 (DashScope Qwen-Realtime / OpenAI Realtime)"
+        self.var_duplex_mode = tk.StringVar(value=init_mode)
+        self.combo_duplex_mode = ttk.Combobox(
+            duplex_row,
+            textvariable=self.var_duplex_mode,
+            values=[
+                "本地极速级联模式 (FunASR/Whisper + LLM + TTS)",
+                "云端全双工实时流 (DashScope Qwen-Realtime / OpenAI Realtime)"
+            ],
+            state="readonly",
+            width=45
+        )
+        self.combo_duplex_mode.pack(side="left", padx=6)
+
+        tk.Label(duplex_row, text="实时服务商:", bg=self.app.COLOR_CARD, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(6, 2))
+        curr_provider = getattr(self.config.voip, "cloud_realtime_provider", "dashscope")
+        self.var_cloud_provider = tk.StringVar(value="dashscope (阿里百炼)" if curr_provider == "dashscope" else "openai (标准接口)")
+        self.combo_cloud_provider = ttk.Combobox(
+            duplex_row,
+            textvariable=self.var_cloud_provider,
+            values=["dashscope (阿里百炼)", "openai (标准接口)"],
+            state="readonly",
+            width=18
+        )
+        self.combo_cloud_provider.pack(side="left", padx=4)
+
+        self.var_cloud_api_key = tk.StringVar(value=getattr(self.config.voip, "cloud_realtime_api_key", ""))
+        self.var_cloud_model = tk.StringVar(value=getattr(self.config.voip, "cloud_realtime_model", "qwen-realtime"))
 
         # ---------------------------------------------------------------------
         # 卡片 1.5: 实时语音识别 (STT) 引擎配置 (优先 GPU 加速)
@@ -207,17 +259,24 @@ class VoIPTabBuilder:
         stt_row.pack(fill="x", padx=16, pady=4)
 
         curr_stt = getattr(self.config.voip, "stt_engine", "paraformer").lower()
-        init_stt_val = "FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)" if "paraformer" in curr_stt else "Faster-Whisper (全语种多规格 / 基础成熟)"
+        if "qwen" in curr_stt:
+            init_stt_val = "Qwen2.5-Omni / Qwen2-Audio (阿里通义多模态语音理解 / 高准确率)"
+        elif "whisper" in curr_stt:
+            init_stt_val = "Faster-Whisper (全语种多规格 / 基础成熟)"
+        else:
+            init_stt_val = "FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)"
+
         self.var_stt_engine = tk.StringVar(value=init_stt_val)
         self.combo_stt_engine = ttk.Combobox(
             stt_row,
             textvariable=self.var_stt_engine,
             values=[
                 "FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)",
+                "Qwen2.5-Omni / Qwen2-Audio (阿里通义多模态语音理解 / 高准确率)",
                 "Faster-Whisper (全语种多规格 / 基础成熟)"
             ],
             state="readonly",
-            width=46
+            width=50
         )
         self.combo_stt_engine.pack(side="left", padx=8)
         self.combo_stt_engine.bind("<<ComboboxSelected>>", lambda _: self._update_stt_status_ui())
@@ -746,6 +805,10 @@ class VoIPTabBuilder:
 
             def _apply():
                 current_stt = self.var_stt_engine.get().lower()
+                if "qwen" in current_stt:
+                    self.lbl_stt_status.configure(text="✅ Qwen2.5-Omni / Qwen2-Audio 语音多模态就绪", fg=self.app.COLOR_SUCCESS)
+                    self.btn_install_stt.configure(text="✅ 云端/本地多模态")
+                    return
                 if ("paraformer" in current_stt) != is_para:
                     return
                 if is_para:
@@ -1882,10 +1945,29 @@ class VoIPTabBuilder:
                 cfg.tts_engine = "qwen3_tts"
 
             stt_str = self.var_stt_engine.get().lower()
-            if "paraformer" in stt_str:
+            if "qwen" in stt_str:
+                cfg.stt_engine = "qwen_audio"
+            elif "paraformer" in stt_str:
                 cfg.stt_engine = "paraformer"
             else:
-                cfg.stt_engine = "faster_whisper"
+                cfg.stt_engine = "whisper"
+
+            # 启发点 1 & 2 与全双工架构参数保存
+            if hasattr(self, "var_on_hold_fillers"):
+                cfg.enable_on_hold_fillers = self.var_on_hold_fillers.get()
+                cfg.on_hold_timeout_sec = float(self.var_on_hold_timeout.get())
+            if hasattr(self, "var_enable_backchannel"):
+                cfg.enable_backchannel = self.var_enable_backchannel.get()
+                cfg.backchannel_min_speech_sec = float(self.var_backchannel_sec.get())
+            if hasattr(self, "var_duplex_mode"):
+                cfg.full_duplex_mode = "cloud_realtime" if "云端" in self.var_duplex_mode.get() else "cascade"
+            if hasattr(self, "var_cloud_provider"):
+                prov_str = self.var_cloud_provider.get().lower()
+                cfg.cloud_realtime_provider = "dashscope" if ("dashscope" in prov_str or "阿里" in prov_str) else "openai"
+            if hasattr(self, "var_cloud_api_key"):
+                cfg.cloud_realtime_api_key = self.var_cloud_api_key.get().strip()
+            if hasattr(self, "var_cloud_model"):
+                cfg.cloud_realtime_model = self.var_cloud_model.get().strip()
 
             cfg.voice_clone_enabled = self.var_clone_enabled.get()
             cfg.active_cloned_voice_id = getattr(self, "_current_active_voice_id", "")

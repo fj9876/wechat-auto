@@ -173,12 +173,16 @@ class ProfileConfig(BaseModel):
 class VoiceConfig(BaseModel):
     """语音识别 (ASR) 配置"""
     enabled: bool = Field(default=True, description="是否启用微信语音识别")
-    engine: str = Field(default="local", description="语音识别引擎: local (本地 faster-whisper) 或 cloud (在线云端 ASR)")
+    engine: str = Field(default="local", description="语音识别引擎: local (本地 faster-whisper), cloud (在线云端 ASR), qwen_audio (阿里通义 Qwen2.5-Omni/Qwen2-Audio)")
     whisper_model: str = Field(default="base", description="本地 faster-whisper 模型规格: tiny, base, small, medium")
     whisper_device: str = Field(default="auto", description="本地推理设备: auto, cpu, cuda")
     cloud_api_url: str = Field(default="https://api.openai.com/v1", description="云端 Whisper API Base URL")
     cloud_api_key: str = Field(default="", description="云端 ASR API Key")
     cloud_model_name: str = Field(default="whisper-1", description="云端语音识别模型名称")
+    # Qwen-Audio / Qwen2.5-Omni 配置
+    qwen_audio_api_url: str = Field(default="", description="Qwen-Audio API Base URL (留空继承全局大模型配置或使用 DashScope 兼容模式)")
+    qwen_audio_api_key: str = Field(default="", description="Qwen-Audio API Key (留空继承全局大模型 Key)")
+    qwen_audio_model: str = Field(default="qwen-audio-turbo", description="Qwen-Audio 模型名称，如 qwen-audio-turbo, qwen-omni-turbo, Qwen/Qwen2-Audio-7B-Instruct")
 
 
 class ImageConfig(BaseModel):
@@ -200,7 +204,7 @@ class VoIPConfig(BaseModel):
     whitelist_users: List[str] = Field(default_factory=list, description="单独指定的语音通话白名单好友 (留空则沿用 targets.whitelist_users)")
     enable_group_call: bool = Field(default=False, description="是否接听群聊语音通话 (默认严格关闭，忽略所有群聊电话)")
     whitelist_groups: List[str] = Field(default_factory=list, description="允许自动接听的群聊列表 (必须单独手动指定)")
-    stt_engine: str = Field(default="paraformer", description="电话实时识别引擎: paraformer (阿里FunASR) 或 whisper (Faster-Whisper)")
+    stt_engine: str = Field(default="paraformer", description="电话实时识别引擎: paraformer (阿里FunASR), whisper (Faster-Whisper), qwen_audio (阿里通义Qwen2.5-Omni/Qwen2-Audio)")
     paraformer_model: str = Field(default="paraformer-zh", description="Paraformer 识别模型规格")
     paraformer_device: str = Field(default="auto", description="Paraformer 推理设备: auto (优先GPU), cuda, cpu")
     tts_engine: str = Field(default="chattts", description="TTS语音合成引擎: kokoro, qwen3_tts, chattts, edge_tts, sapi")
@@ -219,6 +223,22 @@ class VoIPConfig(BaseModel):
     virtual_input_device: str = Field(default="", description="音频录音输入设备(微信扬声器路由，如 CABLE-B Output)")
     virtual_output_device: str = Field(default="", description="音频播放输出设备(注入微信麦克风，如 CABLE-A Input)")
     barge_in_enabled: bool = Field(default=True, description="是否开启全双工智能打断 (对方说话立即暂停AI播音)")
+    
+    # 启发点 1: 思考/检索等待时的口语垫音 (On-Hold Spoken Feedback)
+    enable_on_hold_fillers: bool = Field(default=True, description="是否在思考或知识检索等待超过阈值时主动发出礼貌口语垫音，消除死寂冷场")
+    on_hold_timeout_sec: float = Field(default=1.0, description="大模型思考等待超过此时间(秒)时触发口语垫音，如'好的，我帮您查一下'")
+    
+    # 启发点 2: 全双工长语音倾听应答 (Backchanneling)
+    enable_backchannel: bool = Field(default=True, description="对方长篇连续陈述时是否适时发出轻微倾听应答('嗯'/'对')增强真人感")
+    backchannel_min_speech_sec: float = Field(default=4.5, description="对方连续说话超过此时间(秒)触发柔和倾听反馈")
+
+    # 全双工引擎模式: 级联模式 (cascade) 或 云端全双工实时流 (cloud_realtime)
+    full_duplex_mode: str = Field(default="cascade", description="全双工模式: cascade (本地级联 STT->LLM->TTS), cloud_realtime (云端全双工实时音频流)")
+    cloud_realtime_provider: str = Field(default="dashscope", description="云端实时全双工提供商: dashscope (阿里百炼 Qwen-Realtime), openai (OpenAI Realtime API)")
+    cloud_realtime_api_url: str = Field(default="", description="云端全双工实时 WebSocket 地址 (留空自动按提供商匹配默认地址)")
+    cloud_realtime_api_key: str = Field(default="", description="云端全双工 API Key (留空继承全局大模型 API Key)")
+    cloud_realtime_model: str = Field(default="qwen-realtime", description="云端实时模型名称，如 qwen-realtime, gpt-4o-realtime-preview")
+
     video_enabled: bool = Field(default=True, description="是否启用微信视频通话接听与虚拟数字人接入")
     video_answer_mode: str = Field(default="video", description="视频来电接听方式: video (接听并开启视频), voice (以语音接听)")
     avatar_engine: str = Field(default="liveportrait", description="数字人驱动引擎: liveportrait, wav2lip, musetalk")

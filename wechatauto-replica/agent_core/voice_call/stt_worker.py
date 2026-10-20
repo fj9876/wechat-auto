@@ -118,11 +118,15 @@ class STTWorker:
         device: str = "cuda",
         on_speech_started: Optional[Callable[[], None]] = None,
         on_transcription: Optional[Callable[[str], None]] = None,
+        on_backchannel: Optional[Callable[[], None]] = None,
         is_ai_speaking_fn: Optional[Callable[[], bool]] = None,
         barge_in_enabled: bool = False,
         acoustic_classifier: Optional[Any] = None,
         stt_engine: str = "paraformer",
         paraformer_model_name: str = "paraformer-zh",
+        enable_backchannel: bool = True,
+        backchannel_min_speech_sec: float = 4.5,
+        qwen_audio_config: Optional[Any] = None,
     ):
         self.model_name = whisper_model_name
         self.device = device
@@ -130,9 +134,13 @@ class STTWorker:
         self.paraformer_model_name = paraformer_model_name or "paraformer-zh"
         self.on_speech_started = on_speech_started
         self.on_transcription = on_transcription
+        self.on_backchannel = on_backchannel
         self.is_ai_speaking_fn = is_ai_speaking_fn
         self.barge_in_enabled = barge_in_enabled
         self.acoustic_classifier = acoustic_classifier
+        self.enable_backchannel = enable_backchannel
+        self.backchannel_min_speech_sec = backchannel_min_speech_sec
+        self.qwen_audio_config = qwen_audio_config
 
         self._whisper_model = None
         self._paraformer_model = None
@@ -143,6 +151,8 @@ class STTWorker:
 
         # VAD 状态变量 (16kHz PCM 单声道)
         self._is_speaking = False
+        self._speech_start_time = 0.0
+        self._backchannel_triggered = False
         self._silence_start_time = 0.0
         self._speech_buffer = bytearray()
         self._pre_speech_ring_buffer = collections.deque(maxlen=4)  # 缓存过去 4 块 (~256ms)，确保字头不被切
@@ -353,7 +363,7 @@ class STTWorker:
 
             # 阶段 4: 连续帧防抖窗口 (Multi-frame Debounce)
             # 必须连续真人语音帧才判定开始说话，杜绝瞬态敲击、爆音与扬声器残响
-            required_frames = 5 if ai_speaking else 3
+            required_frames = 4 if ai_speaking else 3
 
             if is_speech_frame:
                 self._consecutive_speech_frames += 1
@@ -382,6 +392,8 @@ class STTWorker:
                             logger.debug(f"[STTWorker] 预判 AI 回声异常: {e}")
 
                     self._is_speaking = True
+                    self._speech_start_time = now
+                    self._backchannel_triggered = False
                     self._silence_start_time = 0.0
                     logger.info(f"[STTWorker] 准确识别对方人声开始 (prob={speech_prob:.2f}, energy={energy:.0f}, 触发打断)...")
 
@@ -402,6 +414,16 @@ class STTWorker:
             else:
                 # 说话进行中：收集音频并检测断句
                 self._speech_buffer.extend(chunk)
+
+                # 全双工倾听应答 (Backchanneling): 对方连续长时间阐述时触发柔和倾听提示
+                if self.enable_backchannel and not self._backchannel_triggered and self.on_backchannel:
+                    if (now - self._speech_start_time) >= self.backchannel_min_speech_sec:
+                        self._backchannel_triggered = True
+                        try:
+                            self.on_backchannel()
+                        except Exception as e:
+                            logger.debug(f"[STTWorker] on_backchannel 异常: {e}")
+
                 if is_speech_frame:
                     self._silence_start_time = 0.0
                 else:
@@ -410,6 +432,8 @@ class STTWorker:
                     elif now - self._silence_start_time >= self._silence_timeout:
                         # 停顿超过静音超时，判定对方本句话结束
                         self._is_speaking = False
+                        self._speech_start_time = 0.0
+                        self._backchannel_triggered = False
                         self._silence_start_time = 0.0
                         self._consecutive_speech_frames = 0
                         self._consecutive_silence_frames = 0
@@ -420,13 +444,67 @@ class STTWorker:
                             self._transcribe_and_dispatch(bytes(self._speech_buffer))
                         self._speech_buffer.clear()
 
+    def _transcribe_with_qwen_audio(self, pcm_bytes: bytes) -> str:
+        """调用 Qwen2.5-Omni / Qwen2-Audio 模型进行音频语义转写"""
+        import io
+        import wave
+        import urllib.request
+        import base64
+        import json
+
+        try:
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm_bytes)
+            wav_data = wav_io.getvalue()
+            audio_b64 = base64.b64encode(wav_data).decode("utf-8")
+
+            cfg = self.qwen_audio_config
+            api_url = (getattr(cfg, "qwen_audio_api_url", "") or "").strip().rstrip("/") if cfg else ""
+            if not api_url:
+                api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key = (getattr(cfg, "qwen_audio_api_key", "") or "").strip() if cfg else ""
+            if not api_key:
+                api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+            model_name = (getattr(cfg, "qwen_audio_model", "") or "qwen-audio-turbo").strip() if cfg else "qwen-audio-turbo"
+
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+                            {"type": "text", "text": "请直接转写这段电话语音内容，仅输出说话人文字，不要附加任何解释："}
+                        ]
+                    }
+                ],
+                "temperature": 0.1
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}" if api_key else ""
+            }
+            req = urllib.request.Request(f"{api_url}/chat/completions", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                choices = data.get("choices", [])
+                if choices and "message" in choices[0]:
+                    content = choices[0]["message"].get("content", "")
+                    if isinstance(content, list):
+                        content = "".join([c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"])
+                    return str(content).strip()
+        except Exception as e:
+            logger.warning(f"[STTWorker] Qwen-Audio 实时转写调用异常: {e}")
+        return ""
+
     def _transcribe_and_dispatch(self, pcm_bytes: bytes):
-        """执行声波/音调声学物理判别与 Paraformer/Faster-Whisper 极速转写净化过滤"""
+        """执行声波/音调声学物理判别与 Paraformer/Faster-Whisper/Qwen-Audio 极速转写净化过滤"""
         if not self._whisper_model and not self._paraformer_model:
             self.initialize_model()
-
-        if not self._whisper_model and not self._paraformer_model:
-            return
 
         # 核心声学物理判别 (基于声波波形归一化互相关与音调基频特征):
         # 无论使用哪种 STT 引擎，必须优先经由声学判别器判定，杜绝虚拟声卡自发音死循环
@@ -445,8 +523,14 @@ class STTWorker:
             audio_array = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             text = ""
 
+            # 0. 若配置为 Qwen2.5-Omni / Qwen2-Audio 引擎
+            if self.stt_engine in ("qwen_audio", "qwen", "qwen_omni"):
+                text = self._transcribe_with_qwen_audio(pcm_bytes)
+                if text:
+                    logger.info(f"[STTWorker] Qwen-Audio 识别成功: 「{text}」")
+
             # 1. 优先使用阿里 FunASR Paraformer 极速毫秒级非自回归转写
-            if self.stt_engine == "paraformer":
+            if not text and (self.stt_engine == "paraformer" or self._paraformer_model is not None):
                 if self._paraformer_model is None:
                     self._init_paraformer_model()
 

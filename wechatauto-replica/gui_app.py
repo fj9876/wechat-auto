@@ -3880,17 +3880,23 @@ class WeChatAIAgentApp:
         # 引擎选择
         tk.Label(grid_v, text="语音识别引擎:", bg=self.COLOR_CARD, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=6)
         curr_eng = getattr(self.config.voice, "engine", "local")
-        eng_display = "local (本地 faster-whisper [离线·极速·无需API])" if curr_eng != "cloud" else "cloud (在线云端 Whisper 接口 [兼容OpenAI])"
+        if curr_eng in ("qwen_audio", "qwen", "qwen_omni"):
+            eng_display = "qwen_audio (阿里通义 Qwen2.5-Omni / Qwen2-Audio [多模态理解·高准确率])"
+        elif curr_eng == "cloud":
+            eng_display = "cloud (在线云端 Whisper 接口 [兼容OpenAI])"
+        else:
+            eng_display = "local (本地 faster-whisper [离线·极速·无需API])"
         self.var_voice_engine = tk.StringVar(value=eng_display)
         self.cb_voice_engine = ttk.Combobox(
             grid_v,
             textvariable=self.var_voice_engine,
             values=[
                 "local (本地 faster-whisper [离线·极速·无需API])",
+                "qwen_audio (阿里通义 Qwen2.5-Omni / Qwen2-Audio [多模态理解·高准确率])",
                 "cloud (在线云端 Whisper 接口 [兼容OpenAI])"
             ],
             state="readonly",
-            width=48,
+            width=52,
             font=("Microsoft YaHei UI", 9)
         )
         self.cb_voice_engine.grid(row=0, column=1, columnspan=2, sticky="w", padx=6, pady=6)
@@ -3980,7 +3986,7 @@ class WeChatAIAgentApp:
             self.f_voice_cloud,
             textvariable=self.var_voice_cloud_model,
             values=[getattr(self.config.voice, "cloud_model_name", "whisper-1") or "whisper-1",
-                    "whisper-1", "whisper-large-v3", "gpt-4o-audio-preview", "gpt-4o-transcribe"],
+                    "whisper-1", "whisper-large-v3", "qwen-audio-turbo", "qwen2-audio-instruct", "qwen2.5-omni", "gpt-4o-audio-preview", "gpt-4o-transcribe"],
             width=28,
             font=("Consolas", 9)
         )
@@ -4001,7 +4007,7 @@ class WeChatAIAgentApp:
         )
         self.btn_fetch_voice_cloud_models.grid(row=1, column=2, sticky="w", padx=6, pady=4)
 
-        if curr_eng == "cloud":
+        if curr_eng in ("cloud", "qwen_audio", "qwen", "qwen_omni"):
             self.f_voice_local.pack_forget()
             self.f_voice_cloud.pack(fill="x", padx=16, pady=4)
 
@@ -4314,9 +4320,11 @@ class WeChatAIAgentApp:
 
     def _on_voice_engine_changed(self, event=None):
         eng_sel = self.var_voice_engine.get().lower()
-        if "cloud" in eng_sel:
+        if "cloud" in eng_sel or "qwen" in eng_sel:
             self.f_voice_local.pack_forget()
             self.f_voice_cloud.pack(fill="x", padx=16, pady=4)
+            if "qwen" in eng_sel and self.var_voice_cloud_model.get() == "whisper-1":
+                self.var_voice_cloud_model.set("qwen-audio-turbo")
         else:
             self.f_voice_cloud.pack_forget()
             self.f_voice_local.pack(fill="x", padx=16, pady=4)
@@ -4354,7 +4362,8 @@ class WeChatAIAgentApp:
             messagebox.showwarning("提示", "请先选择真实存在的测试音频文件！")
             return
 
-        is_local = "cloud" not in self.var_voice_engine.get().lower()
+        eng_sel = self.var_voice_engine.get().lower()
+        is_local = "cloud" not in eng_sel and "qwen" not in eng_sel
         raw_m = self.var_voice_model.get().split()[0].strip()
 
         # 本地模式下，若本地缺失该模型文件，自动调用默认浏览器跳转下载
@@ -4402,13 +4411,21 @@ class WeChatAIAgentApp:
 
         # 抓取当前界面配置构造测试用 VoiceConfig
         cfg = self.config.voice.model_copy()
-        cfg.engine = "local" if is_local else "cloud"
+        if "qwen" in eng_sel:
+            cfg.engine = "qwen_audio"
+        elif not is_local:
+            cfg.engine = "cloud"
+        else:
+            cfg.engine = "local"
         cfg.whisper_model = raw_m
         raw_dev = self.var_voice_device.get().split()[0].strip().lower()
         cfg.whisper_device = raw_dev
         cfg.cloud_api_url = self.var_voice_cloud_url.get().strip()
         cfg.cloud_api_key = self.var_voice_cloud_key.get().strip()
         cfg.cloud_model_name = self.var_voice_cloud_model.get().strip() or "whisper-1"
+        cfg.qwen_audio_api_url = self.var_voice_cloud_url.get().strip()
+        cfg.qwen_audio_api_key = self.var_voice_cloud_key.get().strip()
+        cfg.qwen_audio_model = self.var_voice_cloud_model.get().strip() or "qwen-audio-turbo"
 
         def worker():
             start_ts = time.time()
@@ -4595,7 +4612,13 @@ class WeChatAIAgentApp:
         try:
             # 1. 语音配置
             self.config.voice.enabled = bool(self.var_voice_enabled.get())
-            self.config.voice.engine = "cloud" if "cloud" in self.var_voice_engine.get().lower() else "local"
+            eng_val = self.var_voice_engine.get().lower()
+            if "qwen" in eng_val:
+                self.config.voice.engine = "qwen_audio"
+            elif "cloud" in eng_val:
+                self.config.voice.engine = "cloud"
+            else:
+                self.config.voice.engine = "local"
             raw_m = self.var_voice_model.get().split()[0].strip()
             self.config.voice.whisper_model = raw_m
             raw_dev = self.var_voice_device.get().split()[0].strip().lower()
@@ -4603,6 +4626,9 @@ class WeChatAIAgentApp:
             self.config.voice.cloud_api_url = self.var_voice_cloud_url.get().strip()
             self.config.voice.cloud_api_key = self.var_voice_cloud_key.get().strip()
             self.config.voice.cloud_model_name = self.var_voice_cloud_model.get().strip() or "whisper-1"
+            self.config.voice.qwen_audio_api_url = self.var_voice_cloud_url.get().strip()
+            self.config.voice.qwen_audio_api_key = self.var_voice_cloud_key.get().strip()
+            self.config.voice.qwen_audio_model = self.var_voice_cloud_model.get().strip() or "qwen-audio-turbo"
 
             # 2. 图片配置
             self.config.image.enabled = bool(self.var_image_enabled.get())
@@ -4897,17 +4923,27 @@ class WeChatAIAgentApp:
         if hasattr(self, "var_voice_enabled"):
             self.config.voice.enabled = bool(self.var_voice_enabled.get())
         if hasattr(self, "var_voice_engine"):
-            self.config.voice.engine = "cloud" if "cloud" in self.var_voice_engine.get().lower() else "local"
+            eng_val = self.var_voice_engine.get().lower()
+            if "qwen" in eng_val:
+                self.config.voice.engine = "qwen_audio"
+            elif "cloud" in eng_val:
+                self.config.voice.engine = "cloud"
+            else:
+                self.config.voice.engine = "local"
         if hasattr(self, "var_voice_model"):
             self.config.voice.whisper_model = self.var_voice_model.get().split()[0].strip()
         if hasattr(self, "var_voice_device"):
             self.config.voice.whisper_device = self.var_voice_device.get().split()[0].strip().lower()
         if hasattr(self, "var_voice_cloud_url"):
             self.config.voice.cloud_api_url = self.var_voice_cloud_url.get().strip()
+            self.config.voice.qwen_audio_api_url = self.var_voice_cloud_url.get().strip()
         if hasattr(self, "var_voice_cloud_key"):
             self.config.voice.cloud_api_key = self.var_voice_cloud_key.get().strip()
+            self.config.voice.qwen_audio_api_key = self.var_voice_cloud_key.get().strip()
         if hasattr(self, "var_voice_cloud_model"):
-            self.config.voice.cloud_model_name = self.var_voice_cloud_model.get().strip() or "whisper-1"
+            m_val = self.var_voice_cloud_model.get().strip() or "whisper-1"
+            self.config.voice.cloud_model_name = m_val
+            self.config.voice.qwen_audio_model = m_val
 
         if hasattr(self, "var_image_enabled"):
             self.config.image.enabled = bool(self.var_image_enabled.get())
@@ -4955,10 +4991,35 @@ class WeChatAIAgentApp:
                     cfg.tts_engine = "qwen3_tts"
             if hasattr(vb, "var_stt_engine"):
                 stt_str = vb.var_stt_engine.get().lower()
-                if "paraformer" in stt_str:
+                if "qwen" in stt_str:
+                    cfg.stt_engine = "qwen_audio"
+                elif "paraformer" in stt_str:
                     cfg.stt_engine = "paraformer"
                 else:
-                    cfg.stt_engine = "faster_whisper"
+                    cfg.stt_engine = "whisper"
+            if hasattr(vb, "var_on_hold_fillers"):
+                cfg.enable_on_hold_fillers = bool(vb.var_on_hold_fillers.get())
+            if hasattr(vb, "var_on_hold_timeout"):
+                try:
+                    cfg.on_hold_timeout_sec = float(vb.var_on_hold_timeout.get())
+                except (ValueError, TypeError):
+                    pass
+            if hasattr(vb, "var_enable_backchannel"):
+                cfg.enable_backchannel = bool(vb.var_enable_backchannel.get())
+            if hasattr(vb, "var_backchannel_sec"):
+                try:
+                    cfg.backchannel_min_speech_sec = float(vb.var_backchannel_sec.get())
+                except (ValueError, TypeError):
+                    pass
+            if hasattr(vb, "var_duplex_mode"):
+                cfg.full_duplex_mode = "cloud_realtime" if "云端" in vb.var_duplex_mode.get() else "cascade"
+            if hasattr(vb, "var_cloud_provider"):
+                prov_str = vb.var_cloud_provider.get().lower()
+                cfg.cloud_realtime_provider = "dashscope" if ("dashscope" in prov_str or "阿里" in prov_str) else "openai"
+            if hasattr(vb, "var_cloud_api_key"):
+                cfg.cloud_realtime_api_key = vb.var_cloud_api_key.get().strip()
+            if hasattr(vb, "var_cloud_model"):
+                cfg.cloud_realtime_model = vb.var_cloud_model.get().strip()
             if hasattr(vb, "var_clone_enabled"):
                 cfg.voice_clone_enabled = bool(vb.var_clone_enabled.get())
             if hasattr(vb, "var_clone_path"):
@@ -5254,7 +5315,15 @@ class WeChatAIAgentApp:
         if hasattr(self, "var_voice_enabled"):
             self.var_voice_enabled.set(bool(self.config.voice.enabled))
         if hasattr(self, "var_voice_engine"):
-            self.var_voice_engine.set("云端 API (极速/轻量)" if self.config.voice.engine == "cloud" else "本地 Faster-Whisper (离线/高保密)")
+            curr_e = getattr(self.config.voice, "engine", "local")
+            if curr_e in ("qwen_audio", "qwen", "qwen_omni"):
+                self.var_voice_engine.set("qwen_audio (阿里通义 Qwen2.5-Omni / Qwen2-Audio [多模态理解·高准确率])")
+            elif curr_e == "cloud":
+                self.var_voice_engine.set("cloud (在线云端 Whisper 接口 [兼容OpenAI])")
+            else:
+                self.var_voice_engine.set("local (本地 faster-whisper [离线·极速·无需API])")
+            if hasattr(self, "_on_voice_engine_changed"):
+                self._on_voice_engine_changed()
         if hasattr(self, "var_voice_model"):
             self.var_voice_model.set(self.config.voice.whisper_model or "tiny")
         if hasattr(self, "var_voice_device"):
@@ -5306,10 +5375,22 @@ class WeChatAIAgentApp:
                     vb.var_tts_engine.set("Qwen3-TTS (GGML C++ 量化 / 高保真多语言)")
             if hasattr(vb, "var_stt_engine"):
                 stt_val = getattr(cfg, "stt_engine", "paraformer").lower()
-                if "paraformer" in stt_val:
+                if "qwen" in stt_val:
+                    vb.var_stt_engine.set("Qwen2.5-Omni / Qwen2-Audio (阿里通义多模态语音理解 / 高准确率)")
+                elif "paraformer" in stt_val:
                     vb.var_stt_engine.set("FunASR Paraformer (阿里中文口语 / 毫秒级极速响应 / 推荐)")
                 else:
                     vb.var_stt_engine.set("Faster-Whisper (全语种多规格 / 基础成熟)")
+            if hasattr(vb, "var_on_hold_fillers"): vb.var_on_hold_fillers.set(getattr(cfg, "enable_on_hold_fillers", True))
+            if hasattr(vb, "var_on_hold_timeout"): vb.var_on_hold_timeout.set(getattr(cfg, "on_hold_timeout_sec", 1.0))
+            if hasattr(vb, "var_enable_backchannel"): vb.var_enable_backchannel.set(getattr(cfg, "enable_backchannel", True))
+            if hasattr(vb, "var_backchannel_sec"): vb.var_backchannel_sec.set(getattr(cfg, "backchannel_min_speech_sec", 4.5))
+            if hasattr(vb, "var_duplex_mode"):
+                vb.var_duplex_mode.set("本地极速级联模式 (FunASR/Whisper + LLM + TTS)" if getattr(cfg, "full_duplex_mode", "cascade") == "cascade" else "云端全双工实时流 (DashScope Qwen-Realtime / OpenAI Realtime)")
+            if hasattr(vb, "var_cloud_provider"):
+                vb.var_cloud_provider.set("dashscope (阿里百炼)" if getattr(cfg, "cloud_realtime_provider", "dashscope") == "dashscope" else "openai (标准接口)")
+            if hasattr(vb, "var_cloud_api_key"): vb.var_cloud_api_key.set(getattr(cfg, "cloud_realtime_api_key", ""))
+            if hasattr(vb, "var_cloud_model"): vb.var_cloud_model.set(getattr(cfg, "cloud_realtime_model", "qwen-realtime"))
             if hasattr(vb, "var_clone_enabled"): vb.var_clone_enabled.set(cfg.voice_clone_enabled)
             if hasattr(vb, "var_clone_path"): vb.var_clone_path.set(cfg.voice_clone_audio_path)
             if hasattr(vb, "var_answer_delay"): vb.var_answer_delay.set(cfg.auto_answer_delay_sec)

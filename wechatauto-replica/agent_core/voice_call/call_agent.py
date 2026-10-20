@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import time
 import queue
+import random
 import difflib
 import logging
 import threading
@@ -29,6 +30,7 @@ from agent_core.voice_call.dialogue_engine import DialogueEngine
 from agent_core.voice_call.tts_manager import TTSManager
 from agent_core.voice_call.voice_clone import VoiceCloneManager
 from agent_core.voice_call.acoustic_classifier import AcousticClassifier
+from agent_core.voice_call.cloud_realtime_client import CloudRealtimeClient
 
 logger = logging.getLogger("WeChatCallAgent")
 
@@ -58,7 +60,7 @@ class WeChatCallAgent:
             on_reply_finished=self._on_ai_reply_finished,
         )
 
-        # 3. 语音识别 Worker (支持 FunASR Paraformer 与 Faster-Whisper，注入声学判别器与全生命周期状态)
+        # 3. 语音识别 Worker (支持 FunASR Paraformer, Faster-Whisper 与 Qwen-Audio，注入声学判别器与全生命周期状态)
         device = self.config.voice.whisper_device
         if device == "auto":
             device = "cuda"
@@ -69,48 +71,64 @@ class WeChatCallAgent:
             device=device,
             on_speech_started=self._on_caller_speech_started,
             on_transcription=self._on_caller_transcription,
+            on_backchannel=self._on_caller_backchannel,
             is_ai_speaking_fn=lambda: self.is_ai_speaking,
             barge_in_enabled=bool(getattr(self.config.voip, "barge_in_enabled", False)),
             acoustic_classifier=self.acoustic_classifier,
             stt_engine=stt_eng,
             paraformer_model_name=para_model,
+            enable_backchannel=bool(getattr(self.config.voip, "enable_backchannel", True)),
+            backchannel_min_speech_sec=float(getattr(self.config.voip, "backchannel_min_speech_sec", 4.5)),
+            qwen_audio_config=self.config.voice,
         )
+
+        # 3.1 云端全双工实时客户端句柄
+        self.cloud_realtime_client: Optional[CloudRealtimeClient] = None
 
         # 4. 虚拟音频路由器 (注入残响延时保护与参考声波采集)
         hangover = getattr(self.config.voip, "echo_hangover_sec", 1.2)
+
+        def _on_audio_captured(pcm_chunk: bytes):
+            # 若当前云端全双工实时会话已接通，音频直接路由至云端实时管道；否则走本地级联 STT
+            if getattr(self, "cloud_realtime_client", None) and self.cloud_realtime_client.is_connected:
+                self.cloud_realtime_client.put_audio(pcm_chunk)
+            else:
+                self.stt_worker.put_audio(pcm_chunk)
+
         self.audio_router = AudioRouter(
             input_device_name=self.config.voip.virtual_input_device,
             output_device_name=self.config.voip.virtual_output_device,
             sample_rate=16000,
-            on_audio_captured=self.stt_worker.put_audio,
+            on_audio_captured=_on_audio_captured,
             acoustic_classifier=self.acoustic_classifier,
         )
         self.audio_router.hangover_sec = hangover
 
         # 4.1 虚拟数字人与视频流路由器 (LivePortrait-Realtime & MuseTalk)
-        try:
-            import os
-            from agent_core.video_call.avatar_engine import AvatarEngineManager
-            from agent_core.video_call.video_router import VideoRouter
-            self.avatar_manager = AvatarEngineManager(config=self.config)
-            cam_w = getattr(self.config.voip, "virtual_camera_width", 640)
-            cam_h = getattr(self.config.voip, "virtual_camera_height", 480)
-            cam_fps = getattr(self.config.voip, "virtual_camera_fps", 25)
-            self.video_router = VideoRouter(
-                app_config=self.config,
-                avatar_manager=self.avatar_manager,
-                width=cam_w,
-                height=cam_h,
-                fps=cam_fps
-            )
-            char_img = getattr(self.config.voip, "avatar_image_path", "data/avatars/default_avatar.png")
-            if os.path.exists(char_img):
-                self.avatar_manager.set_character_image(char_img)
-            logger.info("[CallAgent] ✅ 虚拟数字人与视频路由中枢就绪")
-        except Exception as e:
-            logger.warning(f"[CallAgent] 视频数字人组件初始化跳过: {e}")
-            self.avatar_manager = None
-            self.video_router = None
+        self.avatar_manager = None
+        self.video_router = None
+        if getattr(self.config.voip, "video_enabled", True):
+            try:
+                import os
+                from agent_core.video_call.avatar_engine import AvatarEngineManager
+                from agent_core.video_call.video_router import VideoRouter
+                self.avatar_manager = AvatarEngineManager(config=self.config)
+                cam_w = getattr(self.config.voip, "virtual_camera_width", 640)
+                cam_h = getattr(self.config.voip, "virtual_camera_height", 480)
+                cam_fps = getattr(self.config.voip, "virtual_camera_fps", 25)
+                self.video_router = VideoRouter(
+                    app_config=self.config,
+                    avatar_manager=self.avatar_manager,
+                    width=cam_w,
+                    height=cam_h,
+                    fps=cam_fps
+                )
+                char_img = getattr(self.config.voip, "avatar_image_path", "data/avatars/default_avatar.png")
+                if os.path.exists(char_img):
+                    self.avatar_manager.set_character_image(char_img)
+                logger.info("[CallAgent] ✅ 虚拟数字人与视频路由中枢就绪")
+            except Exception as e:
+                logger.warning(f"[CallAgent] 视频数字人组件初始化跳过: {e}")
 
         # 5. 来电检测器
         self.voip_watcher = VoIPWatcher(
@@ -137,6 +155,10 @@ class WeChatCallAgent:
         self._active_synth_count = 0
         self._synth_count_lock = threading.Lock()
         self._last_ai_speech_end_time: float = 0.0
+
+        # 7. 启发点 1: 思考/检索等待时的口语垫音 (On-Hold Spoken Feedback) 状态
+        self._on_hold_timer: Optional[threading.Timer] = None
+        self._turn_first_sentence_ready: bool = False
 
     @property
     def is_ai_speaking(self) -> bool:
@@ -244,6 +266,14 @@ class WeChatCallAgent:
         with self._tts_results_lock:
             self._tts_results.clear()
 
+        # 取消垫音定时器与云端实时客户端
+        if self._on_hold_timer:
+            self._on_hold_timer.cancel()
+            self._on_hold_timer = None
+        if getattr(self, "cloud_realtime_client", None):
+            self.cloud_realtime_client.stop()
+            self.cloud_realtime_client = None
+
         # 唯醒 TTS 分发线程让其自然退出 (daemon 线程不需强杀)
         self._tts_dispatch_event.set()
         # 清空旧队列，备下次重启时用全新的空队列
@@ -275,6 +305,9 @@ class WeChatCallAgent:
         self.tts_manager.kokoro_voice = getattr(new_config.voip, "kokoro_voice", "zf_xiaobei")
         self.stt_worker.stt_engine = getattr(new_config.voip, "stt_engine", "paraformer").lower()
         self.stt_worker.paraformer_model_name = getattr(new_config.voip, "paraformer_model", "paraformer-zh")
+        self.stt_worker.enable_backchannel = bool(getattr(new_config.voip, "enable_backchannel", True))
+        self.stt_worker.backchannel_min_speech_sec = float(getattr(new_config.voip, "backchannel_min_speech_sec", 4.5))
+        self.stt_worker.qwen_audio_config = new_config.voice
         self.audio_router.hangover_sec = getattr(new_config.voip, "echo_hangover_sec", 1.2)
         self.audio_router.input_device_name = new_config.voip.virtual_input_device
         self.audio_router.output_device_name = new_config.voip.virtual_output_device
@@ -290,7 +323,7 @@ class WeChatCallAgent:
                     self.avatar_manager.set_character_image(img_path)
             except Exception as e:
                 logger.debug(f"[CallAgent] 热重载数字人配置异常: {e}")
-        logger.info(f"[CallAgent] 配置热重载完成: 识别引擎=[{self.stt_worker.stt_engine}], 发音引擎=[{self.tts_manager.current_engine}], 打断模式=[{self.stt_worker.barge_in_enabled}]")
+        logger.info(f"[CallAgent] 配置热重载完成: 识别引擎=[{self.stt_worker.stt_engine}], 发音引擎=[{self.tts_manager.current_engine}], 打断模式=[{self.stt_worker.barge_in_enabled}], 全双工模式=[{getattr(new_config.voip, 'full_duplex_mode', 'cascade')}]")
 
     # -------------------------------------------------------------------------
     # 状态与流水线协同回调
@@ -301,6 +334,47 @@ class WeChatCallAgent:
         call_type = "视频" if is_video else "语音"
         logger.info(f"[CallAgent] 🔔 捕获到微信{call_type}来电请求: 来电方=[{caller_name}], 是否群聊={is_group}")
         self.emit_event("call_incoming", {"caller": caller_name, "is_group": is_group, "is_video": is_video})
+
+    def _start_cloud_realtime_session(self, caller_name: str):
+        """启动云端全双工实时会话通道"""
+        def _on_cloud_audio(pcm_bytes, rate):
+            if not self._running:
+                return
+            self.audio_router.play_audio(pcm_bytes, orig_rate=rate)
+            if getattr(self, "video_router", None) and self.video_router.is_running:
+                self.video_router.put_audio(pcm_bytes, sample_rate=rate)
+            self._last_ai_speech_end_time = time.time()
+
+        def _on_cloud_interrupted():
+            self._on_caller_speech_started()
+
+        def _on_cloud_transcript(role, text):
+            if role == "assistant":
+                self._recent_ai_utterances.append((text, time.time()))
+                self.emit_event("ai_sentence", {"sentence": text})
+            else:
+                self.emit_event("caller_transcript", {"text": text})
+
+        def _on_cloud_error(err):
+            logger.warning(f"[CallAgent] 云端实时会话遇到异常 ({err})，平滑自动降级至本地级联对答！")
+            self.emit_event("cloud_realtime_error", {"error": err})
+            if self.cloud_realtime_client:
+                self.cloud_realtime_client.stop()
+                self.cloud_realtime_client = None
+
+        try:
+            self.cloud_realtime_client = CloudRealtimeClient(
+                voip_config=self.config.voip,
+                on_audio_received=_on_cloud_audio,
+                on_interrupted=_on_cloud_interrupted,
+                on_transcript=_on_cloud_transcript,
+                on_error=_on_cloud_error,
+            )
+            self.cloud_realtime_client.start()
+            logger.info("[CallAgent] ✅ 云端全双工实时客户端已激活")
+        except Exception as e:
+            logger.error(f"[CallAgent] 初始化云端实时会话失败，降级本地级联: {e}")
+            self.cloud_realtime_client = None
 
     def _on_call_answered(self, caller_name: str, is_group: bool, is_video: bool = False):
         """电话接通事件"""
@@ -321,7 +395,6 @@ class WeChatCallAgent:
         self._tts_dispatch_event.set()
 
         # 【关键】在启动录音流之前，提前合成一段短语音，建立 AI 音色声学指纹
-        # 这样不依赖 AI 实际播音时序，从第一句话起就能识别 AI 自身回声
         self._build_ai_voice_fingerprint_async()
 
         # 启动对话会话、音频流与 STT
@@ -329,16 +402,50 @@ class WeChatCallAgent:
         self.audio_router.start()
         self.stt_worker.start()
 
+        # 若配置为云端全双工实时模式 (cloud_realtime)，同时拉起云端实时客户端
+        if getattr(self.config.voip, "full_duplex_mode", "cascade") == "cloud_realtime":
+            self._start_cloud_realtime_session(caller_name)
+
         # 若开启了视频数字人功能，电话接通时保持虚拟摄像头推流待命，彻底杜绝微信连入绿幕
         if getattr(self.config.voip, "video_enabled", True):
             if getattr(self, "video_router", None) and not self.video_router.is_running:
                 logger.info(f"[CallAgent] 📹 通话接通 (is_video={is_video})，立即启动虚拟数字人视频推流中枢")
                 self.video_router.start()
 
+    def _on_caller_backchannel(self):
+        """对方连续长篇陈述 -> 插入轻微自然的倾听确认 (Backchanneling)"""
+        if not getattr(self.config.voip, "enable_backchannel", True) or not self._running:
+            return
+        # 若 AI 正在发声播音或思考，不插入倾听词
+        if self.is_ai_speaking or (self.dialogue_engine and self.dialogue_engine.is_generating):
+            return
+        words = ["嗯", "好的", "对", "明白"]
+        word = random.choice(words)
+
+        def _play_soft():
+            try:
+                pcm_bytes, rate = self.tts_manager.synthesize(word)
+                if pcm_bytes and self._running and not self.is_ai_speaking:
+                    import numpy as np
+                    # 衰减音量至 45%，作为柔和的背景反馈，绝不压过对方声音
+                    samples = (np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) * 0.45).astype(np.int16).tobytes()
+                    logger.info(f"[CallAgent] 🎙️ 全双工轻量倾听应答 (Backchanneling): 「{word}」")
+                    self._recent_ai_utterances.append((word, time.time()))
+                    self.audio_router.play_audio(samples, orig_rate=rate)
+            except Exception as e:
+                logger.debug(f"[CallAgent] 倾听应答合成异常: {e}")
+
+        threading.Thread(target=_play_soft, daemon=True, name="BackchannelPlay").start()
+
     def _on_caller_speech_started(self):
         """对方开始说话 -> 触发全双工打断 (Barge-in)"""
         if self.config.voip.barge_in_enabled:
             logger.info("[CallAgent] 收到打断信号: 立即废弃未播旧句，停止 AI 发声与生成")
+            if self._on_hold_timer:
+                self._on_hold_timer.cancel()
+                self._on_hold_timer = None
+            if getattr(self, "cloud_realtime_client", None) and self.cloud_realtime_client.is_connected:
+                self.cloud_realtime_client.interrupt()
             self._current_gen_id += 1
             self._current_sentence_seq = 0
             self._next_play_seq = 0
@@ -349,7 +456,6 @@ class WeChatCallAgent:
             self._tts_dispatch_event.set()
             self._last_ai_speech_end_time = 0.0
             # 重要: 不能 clear() 声学分类器 — barge-in 后声卡仍有残响，必须继续用参考波形判别和阻断
-            # 只刷新时间戳，让已缓存的 AI 声波指纹继续发挥作用
             self.acoustic_classifier.reset_timer_only()
             self.audio_router.interrupt()
             if getattr(self, "video_router", None) and self.video_router.is_running:
@@ -452,6 +558,25 @@ class WeChatCallAgent:
 
         return False
 
+    def _trigger_on_hold_filler(self, gen_id: int):
+        """意图检索 / 思考等待超时 -> 触发礼貌口语垫音 (消除等待死寂)"""
+        if gen_id != self._current_gen_id or not self._running or self._turn_first_sentence_ready or self.is_ai_speaking:
+            return
+        fillers = ["好的，我帮您查一下...", "嗯，让我想想...", "好的，稍等哦...", "我来看看...", "好的，稍等一下..."]
+        filler = random.choice(fillers)
+        logger.info(f"[CallAgent] 🔊 触发检索思考口语垫音: 「{filler}」 (消灭死寂等待)")
+        try:
+            pcm_bytes, rate = self.tts_manager.synthesize(filler)
+            if pcm_bytes and gen_id == self._current_gen_id and not self._turn_first_sentence_ready and self._running:
+                self._recent_ai_utterances.append((filler, time.time()))
+                self.emit_event("ai_sentence", {"sentence": filler})
+                self.audio_router.play_audio(pcm_bytes, orig_rate=rate)
+                if getattr(self, "video_router", None) and self.video_router.is_running:
+                    self.video_router.put_audio(pcm_bytes, sample_rate=rate)
+                self._last_ai_speech_end_time = time.time()
+        except Exception as e:
+            logger.debug(f"[CallAgent] 思考口语垫音合成异常: {e}")
+
     def _on_caller_transcription(self, text: str):
         """对方说完了话，转写完成 -> 校验回声后推送给大模型思考"""
         if self._is_ai_echo(text):
@@ -466,12 +591,32 @@ class WeChatCallAgent:
             self._tts_results.clear()
         self._tts_dispatch_event.set()
 
+        # 取消上轮垫音计时器，并重置首句到达标志
+        if self._on_hold_timer:
+            self._on_hold_timer.cancel()
+            self._on_hold_timer = None
+        self._turn_first_sentence_ready = False
+
+        # 若启用了思考等待口语垫音，启动定时器 (超时未出句则发出短垫音)
+        if getattr(self.config.voip, "enable_on_hold_fillers", True):
+            timeout = float(getattr(self.config.voip, "on_hold_timeout_sec", 1.0))
+            current_gen = self._current_gen_id
+            self._on_hold_timer = threading.Timer(timeout, self._trigger_on_hold_filler, args=(current_gen,))
+            self._on_hold_timer.daemon = True
+            self._on_hold_timer.start()
+
         logger.info(f"[CallAgent] 👤 确认对面真实用户发话: 「{text}」 -> 触发大模型思考回复")
         self.emit_event("caller_transcript", {"text": text})
         self.dialogue_engine.on_user_speech(text)
 
     def _on_ai_sentence_ready(self, sentence: str):
         """大模型生成了一个完整句子 -> 提交多线程流水线并发预合成"""
+        # 首句到达，立即取消思考垫音计时器
+        self._turn_first_sentence_ready = True
+        if self._on_hold_timer:
+            self._on_hold_timer.cancel()
+            self._on_hold_timer = None
+
         self._recent_ai_utterances.append((sentence, time.time()))
         self.emit_event("ai_sentence", {"sentence": sentence})
         gen_id = self._current_gen_id
